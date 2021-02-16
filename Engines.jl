@@ -51,6 +51,8 @@ md"""
 ## Capacitated VRP with Time Windows
 
 For this first deliverable, an adaptation of the MTZ formulation has been developed. 
+
+CAMBIAR
 """
 
 # ╔═╡ 07b52084-6989-11eb-3019-5776e45a0a1b
@@ -88,7 +90,7 @@ begin
 
 	mutable struct Solution
 		routes    ::Dict{Any,Any}
-		objective ::Float64
+		objective ::Any
 		status    ::Any
 	end
 end;
@@ -205,7 +207,7 @@ Three main data sources:
 distance(n1::Node, n2::Node) = sqrt((n1.lat - n2.lat)^2 + (n1.long - n2.long)^2);
 
 # ╔═╡ 1d364b76-698a-11eb-2133-0f8f2c2259aa
-function calculate_time(nodes::Vector{Node}; minutes_constant = 3, digits = 2)
+function calculate_time(nodes::Vector{Node}; digits = 2)
 	
     n_nodes = length(nodes)
 	store = n_nodes - 1 # start or source
@@ -215,10 +217,8 @@ function calculate_time(nodes::Vector{Node}; minutes_constant = 3, digits = 2)
     for i in 1:n_nodes-1
         for j in i+1:n_nodes
             d = distance(nodes[i], nodes[j])
-            factor = 10^digits
-            minutes = minutes_constant * (floor(factor * d) / factor)
-            time[i,j] = minutes
-            time[j,i] = minutes
+            time[i,j] = d
+            time[j,i] = d
         end
     end
 	
@@ -326,7 +326,7 @@ function instance_OR_tools()::Instance
 	]
 	
 	nodes = [Node(1, coord[1], coord[2]) for coord in coordinates]
-	travel_times = calculate_time(nodes, minutes_constant = 1)
+	travel_times = calculate_time(nodes)
 	service_times = zeros(size)
 	items_orders = [1, 1, 2, 4, 2, 4, 8, 8, 1, 2, 1, 2, 4, 4, 8, 8]
 	capacity = 15
@@ -344,9 +344,6 @@ to_int(x::String) = parse(Int, x);
 to_float(x::String) = parse(Float64, x);
 
 # ╔═╡ d537230c-68be-11eb-2bd8-b9c93c0278f5
-"""
-Es necesario poner depot al final y duplicarlo! (?)
-"""
 function solomon_dataset(path_name)::Instance
 	
 	xlm = parse_file(path_name)
@@ -368,7 +365,7 @@ function solomon_dataset(path_name)::Instance
 	deleteat!(nodes, 1)
 	nodes = vcat(nodes, source_sink) # add source and sink at the end
 	
-	travel_times = calculate_time(nodes, minutes_constant = 3)
+	travel_times = calculate_time(nodes)
 	
 	# RTs
 	# -----
@@ -414,7 +411,7 @@ As-is approach.
 """
 
 # ╔═╡ 403d1c28-67d5-11eb-3a0f-e92303f07e3f
-function or_tools_routing(instance::Instance)::Solution
+function solve_or_tools(instance::Instance)::Solution
 	
 	
 end;
@@ -436,6 +433,27 @@ We will benchmark the following solvers:
 
 Using [JuMP](https://github.com/jump-dev/JuMP.jl) as the mathematical modeling language.
 """
+
+# ╔═╡ a9895574-6fc4-11eb-2667-a9387613508a
+"""
+Returns the cycle in the permutation described by `perm_matrix` which includes
+`starting_ind`.
+"""
+function find_cycle(perm_matrix, starting_ind = 1)
+    cycle = [starting_ind]
+    prev_ind = ind = starting_ind
+    while true
+        next_ind = findfirst(>(0.5), @views(perm_matrix[ind, 1:prev_ind-1]))
+        if isnothing(next_ind)
+            next_ind = findfirst(>(0.5), @views(perm_matrix[ind, prev_ind+1:end])) +
+                       prev_ind
+        end
+        next_ind == starting_ind && break
+        push!(cycle, next_ind)
+        prev_ind, ind = ind, next_ind
+    end
+    cycle
+end;
 
 # ╔═╡ 804bcac8-6706-11eb-1d8a-756a5afde359
 function format_routes(X, store::Int64, dummy_store::Int64, 												total_time::Matrix{Float64})
@@ -466,22 +484,8 @@ function format_routes(X, store::Int64, dummy_store::Int64, 												total_ti
 	return routes_times
 end;
 
-# ╔═╡ 48699cb4-6366-11eb-175d-8728ce809fea
-function calculate_total_time(
-		travel_times::Matrix{Float64}, service_times::Vector{Int64}, 						LC::UnitRange{Int64}, DL::UnitRange{Int64})
-
-	for i in LC, j in LC
-		if i in DL
-			travel_times[i, j] += service_times[i]
-		end
-	end
-	
-	return travel_times
-	
-end;
-
 # ╔═╡ cda9bb12-6671-11eb-0494-476f9966741d
-function optimal_routing(instance::Instance, solver::Module, solver_params::Pair...)
+function mtz_model(instance::Instance, solver::Module, solver_params::Pair...)
     
     # Parameters
     # -----
@@ -498,12 +502,12 @@ function optimal_routing(instance::Instance, solver::Module, solver_params::Pair
     store = n_locations - 1 # source node
     dummy_store = deepcopy(n_locations) # sink node
 
-    items_orders, capacity, max_travel_time = instance.items_orders, instance.RT_capacity, instance.RT_max_route_time
+    items_orders, capacity, max_travel_time = instance.items_orders, 												instance.RT_capacity, instance.RT_max_route_time
 
 	early_times = [instance.early_times; 0; 0]
 	late_times = [instance.late_times; 0; max_travel_time]
     
-    total_time = calculate_total_time(instance.travel_times, instance.service_times, LC, DL)
+    total_time = instance.travel_times # calculate_total_time(instance.travel_times, 											instance.service_times, LC, DL)
 	
 	bigT = max_travel_time * 2
     bigQ = capacity + maximum(items_orders)
@@ -525,7 +529,7 @@ function optimal_routing(instance::Instance, solver::Module, solver_params::Pair
 	@constraint(model, [i in DL], sum(X[i,j] for j in LC) == 1) 
 	
 	# if selected, ...
-	@constraint(model, [i in LC, j in DL], units[j] >= units[i] + items_orders[j] - bigQ * (1 - X[i,j])) 
+	@constraint(model, [i in LC, j in DL], units[j] >= units[i] + items_orders[j] - 														bigQ * (1 - X[i,j])) 
 		
 	# units or volume carried by RT should not exceed capacity.
 	@constraint(model, [i in LC], 0 <= units[i] <= capacity) 
@@ -534,12 +538,12 @@ function optimal_routing(instance::Instance, solver::Module, solver_params::Pair
 	@constraint(model, sum(X[store, j] for j in LC) <= n_RTs) 
 	
 	# for each delivery location, ...
-	@constraint(model, [h in DL], sum(X[i, h] for i in LC) - sum(X[h,j] for j in LC) == 0) 
+	@constraint(model, [h in DL], sum(X[i, h] for i in LC) - sum(X[h,j] for j in LC) 									== 0) 
 
-	@constraint(model, sum(X[i, dummy_store] for i in LC) == sum(X[store, j] for j in LC))
+	@constraint(model, sum(X[i, dummy_store] for i in LC) == sum(X[store, j] for j 																				in LC))
 		
 	# if node selected, then the arrival time should ...
-	@constraint(model, [i in LC, j in LC], arrival[j] >= arrival[i] + total_time[i,j] - bigT * (1 - X[i,j]))
+	@constraint(model, [i in LC, j in LC], arrival[j] >= arrival[i] + 															total_time[i,j] - bigT * (1 - X[i,j]))
 		
 	# arrival at node should be between time window.
 	@constraint(model, [i in LC], early_times[i] <= arrival[i] <= late_times[i]) 
@@ -561,6 +565,41 @@ function optimal_routing(instance::Instance, solver::Module, solver_params::Pair
 	dict_routes_times = format_routes(X, store, dummy_store, total_time)
     
 	return Solution(dict_routes_times, objective_value(model), status)
+	
+end;
+
+# ╔═╡ bbb41a3a-6f8e-11eb-02c9-fbd9f8088eca
+function optimal_routing(instance::Instance, solver::Module, solver_params::Pair...)
+	
+	callback_feature = ["Gurobi", "CPLEX", "GLPK"]
+	
+	if string(solver) in callback_feature
+		
+		@warn "using model with lazy constraints with " * string(solver)
+		
+		# lazy_model(instance, solver, solver_params...)
+		mtz_model(instance, solver, solver_params...) # delete
+		
+	else
+		
+		@warn "using MTZ model with " * string(solver)
+		
+		mtz_model(instance, solver, solver_params...)
+		
+	end	
+end;
+
+# ╔═╡ 48699cb4-6366-11eb-175d-8728ce809fea
+function calculate_total_time(
+		travel_times::Matrix{Float64}, service_times::Vector{Int64}, 						LC::UnitRange{Int64}, DL::UnitRange{Int64})
+
+	for i in LC, j in LC
+		if i in DL
+			travel_times[i, j] += service_times[i]
+		end
+	end
+	
+	return travel_times
 	
 end;
 
@@ -591,6 +630,11 @@ end;
 
 # ╔═╡ 9d7b483c-67ce-11eb-359c-a38abb43f688
 function local_search(initial_solution)
+	
+end;
+
+# ╔═╡ a69f3478-6f92-11eb-38cd-edb17d49d2eb
+function solve_heuristic()
 	
 end;
 
@@ -712,10 +756,15 @@ function benchmark_engines(data::Instance, engines::Vector{Module}, all_params::
 	suite, objective_values = BenchmarkGroup(["engines"]), Dict()
 	
 	for engine in engines
+		
 		engine_name = string(engine)
+		
 		e_params = all_params[engine_name]
-		objective_values[engine_name] = optimal_routing(data, engine, 															e_params...).objective
-		suite[engine_name] = @benchmark optimal_routing($data,$engine,$e_params...)
+
+		objective_values[engine_name] = optimal_routing(deepcopy(data), engine, 														e_params...).objective
+
+		suite[engine_name] = @benchmark optimal_routing(deepcopy(data), engine, 																e_params...)
+
 	end
 
 	return suite, objective_values
@@ -801,13 +850,199 @@ For randomly generated instances: $(@bind size Slider(1:300, default=10, show_va
 
 """
 
+# ╔═╡ 2935b8f0-6fb4-11eb-1e6d-b53b39837943
+"""
+Returns a list of cycles from the permutation described by `perm_matrix`.
+"""
+function get_cycles(perm_matrix)
+    N = size(perm_matrix, 1)
+    remaining_inds = Set(1:N)
+    cycles = Vector{Int}[]
+    while length(remaining_inds) > 0
+        cycle = find_cycle(perm_matrix, first(remaining_inds))
+        push!(cycles, cycle)
+        setdiff!(remaining_inds, cycle)
+    end
+    cycles
+end;
+
+# ╔═╡ 1f7a7e50-6fa4-11eb-15f7-1957b7385bab
+function remove_cycle_callback(model, X; symmetric::Bool = true)
+	
+	num_triggers = Ref(0)
+	
+	return function remove_cycles_callback(cb_data)
+        tour_matrix_val = callback_value.(Ref(cb_data), X)
+        any(x -> !(x ≈ round(Int, x)), X) && return
+
+        num_triggers[] += 1
+        cycles = get_cycles(X)
+
+        if length(cycles) == 1
+			@info "LC triggered ($(num_triggers[])); found a cycle!"
+			
+            return nothing
+        end
+
+        for cycle in cycles
+            
+			constr = symmetric ? 2 * length(cycle) - 2 : length(cycle) - 1
+            
+			cycle_constraint = @build_constraint( sum(X[cycle, cycle]) <= constr)
+			
+            MOI.submit(model, MOI.LazyConstraint(cb_data), cycle_constraint)
+			
+        end
+
+        num_cycles = length(cycles)
+        tot_cycles[] += num_cycles
+		
+		@info "LC triggered ($(num_triggers[])); disallowed $num_cycles cycles."
+
+    end
+end;
+
+# ╔═╡ 9159403c-6fc3-11eb-1435-7decdb89f2ad
+"""
+Find the (non-maximal-length) cycles in the current solution `X` and add constraints to the JuMP model to disallow them. Returns the number of cycles found.
+"""
+function remove_cycles!(model, tour_matrix; symmetric)
+    tour_matrix_val = value.(tour_matrix)
+    cycles = get_cycles(tour_matrix_val)
+    length(cycles) == 1 && return 1
+    for cycle in cycles
+        constr = symmetric ? 2 * length(cycle) - 2 : length(cycle) - 1
+        @constraint(model, sum(tour_matrix[cycle, cycle]) <= constr)
+    end
+    return length(cycles)
+end;
+
+# ╔═╡ e0739df2-6f8e-11eb-0341-e5e67b838f21
+"""Dantzig-Fulkerson-Johnson"""
+function lazy_model(instance::Instance, solver::Module, solver_params::Pair...; 							symmetric = true)
+	
+    # Parameters
+    # -----
+
+	n_locations = Base.size(instance.travel_times, 1) # total nodes
+	LC = 1:n_locations
+    
+	n_deliveries = length(instance.service_times) # customers
+    DL = 1:n_deliveries
+
+    n_RTs = n_deliveries # RTs
+    RT = 1:n_RTs
+
+    store = n_locations - 1 # source node
+    dummy_store = deepcopy(n_locations) # sink node
+
+    items_orders, capacity, max_travel_time = instance.items_orders, 												instance.RT_capacity, instance.RT_max_route_time
+
+	early_times = [instance.early_times; 0; 0]
+	late_times = [instance.late_times; 0; max_travel_time]
+    
+    total_time = instance.travel_times
+	
+	bigT = max_travel_time * 2
+    bigQ = capacity + maximum(items_orders)
+    
+
+    # Formulation
+    # -----
+
+	model = Model(optimizer_with_attributes(solver.Optimizer, solver_params...))
+
+	@variable(model, X[LC, LC], Bin)
+	@variable(model, arrival[LC] >= 0)
+	@variable(model, units[LC] >= 0)
+
+	@objective(model, Min, sum(total_time[i,j] * X[i,j] for i in LC, j in LC)) 
+	
+	
+	
+	
+	
+	# each delivery location must be visited exactly once.
+	@constraint(model, [i in DL], sum(X[i,j] for j in LC) == 1) 
+	
+	# if selected, ...
+	@constraint(model, [i in LC, j in DL], units[j] >= units[i] + items_orders[j] - 														bigQ * (1 - X[i,j])) 
+		
+	# units or volume carried by RT should not exceed capacity.
+	@constraint(model, [i in LC], 0 <= units[i] <= capacity) 
+		
+	# store is the beginning for all the routes (not all RTs have to be used).
+	@constraint(model, sum(X[store, j] for j in LC) <= n_RTs) 
+	
+	# for each delivery location, ...
+	@constraint(model, [h in DL], sum(X[i, h] for i in LC) - sum(X[h,j] for j in LC) 									== 0) 
+
+	@constraint(model, sum(X[i, dummy_store] for i in LC) == sum(X[store, j] for j 																				in LC))
+		
+	# if node selected, then the arrival time should ...
+	@constraint(model, [i in LC, j in LC], arrival[j] >= arrival[i] + 															total_time[i,j] - bigT * (1 - X[i,j]))
+		
+	# arrival at node should be between time window.
+	@constraint(model, [i in LC], early_times[i] <= arrival[i] <= late_times[i]) 
+		
+	@constraint(model, [i in LC], X[i, store] == 0)
+		
+	@constraint(model, [i in LC], X[dummy_store, i] == 0) 
+		
+	# should not select the diagonal of the matrix.
+	@constraint(model, [i in LC], X[i, i] == 0) 
+	
+
+	
+
+    # Optimize!
+    # -----
+	
+	cycles_callback = remove_cycle_callback(model, X, symmetric = symmetric)
+	
+	MOI.set(model, MOI.LazyConstraintCallback(), cycles_callback)
+
+    num_cycles = 2 # just something > 1
+
+    while num_cycles > 1
+        
+		t = @elapsed optimize!(model)
+		
+        status = JuMP.termination_status(model)
+		
+        num_cycles = remove_cycles!(model, X; symmetric = symmetric)
+		
+        tot_cycles[] += num_cycles
+		
+        iter[] += 1
+		
+		msj = num_cycles == 1 ? "found cycle!" : "disallowed $num_cycles cycles."
+		
+		@info "Iteration $(iter[]) took $(round(t, digits=3))s, $description"
+		
+    end
+	
+    tot_cycles[] -= 1 # remove the true cycle	
+	
+
+	status = JuMP.termination_status(model)
+	status == MOI.OPTIMAL || @warn(status)
+	cycles = get_cycles(value.(X))
+	length(cycles) == 1 || error("Did not elimate all subtours")
+	
+	dict_routes_times = format_routes(X, store, dummy_store, total_time)
+    
+	return Solution(dict_routes_times, objective_value(model), status)
+	
+end;
+
 # ╔═╡ 8b2d6f44-6992-11eb-2c77-25e14955515c
 md"""
 For Solomon datasets, there are many `.xml` files at the `Input` folder.
 """
 
 # ╔═╡ b0fbb7f2-68d0-11eb-3d20-f5f015d3b4d1
-path_name = joinpath("Inputs", "solomon-1987", "C102_100.xml");
+path_name = joinpath("Inputs", "solomon-1987", "C101_100.xml");
 
 # ╔═╡ a85fed86-68bf-11eb-2bca-9985e71090cb
 md"""
@@ -839,7 +1074,7 @@ md"""
 Quantity of nodes: $(Base.size(data.travel_times, 1))
 """
 
-# ╔═╡ 3ff8d1dc-6988-11eb-20ef-e15cfb7d5814
+# ╔═╡ 82073998-6bbf-11eb-158c-455db68ee805
 data
 
 # ╔═╡ 7413ed26-6729-11eb-09ce-f558ae459b6f
@@ -880,10 +1115,10 @@ Finally, choose the parameters configuration.
 
 # ╔═╡ 7287f2d6-6729-11eb-0871-33c510dafd9e
 begin
-	time_limit = 50.0 # seconds
-	absolute_gap = 0.1
-	relative_gap = 0.1
-	stdout = true
+	time_limit = 1.0 # seconds
+	absolute_gap = .5
+	relative_gap = .5
+	stdout = false
 end;
 
 # ╔═╡ b76fdaac-67c5-11eb-12d1-81ef3b411ad6
@@ -950,12 +1185,20 @@ md"""
 Execute a single run: $(@bind run_single PlutoUI.CheckBox(false))
 """
 
+# ╔═╡ af883f14-6a77-11eb-0bac-0be99ccd9413
+engine = Gurobi;
+
 # ╔═╡ 753a39a6-6726-11eb-0444-afebdae52f2d
 begin
-	engine = Gurobi
 	if run_single
-		solution = optimal_routing(data, engine, all_params[string(engine)]...)
-		# plot_vrp!()
+		try
+			solution = optimal_routing(deepcopy(data), engine, 																all_params[string(engine)]...)
+			# plot_vrp!()
+			
+		catch err
+			solution = Solution(Dict(missing=>missing), missing, err) 
+		end
+
 	end
 end
 
@@ -974,7 +1217,9 @@ Execute a sample: $(@bind run_single_sample PlutoUI.CheckBox(false))
 # ╔═╡ c556da4e-67c7-11eb-2205-9585ae72e01c
 begin
 	if run_single_sample
-		@benchmark optimal_routing(data, engine, all_params[string(engine)]...)
+
+		@benchmark optimal_routing(deepcopy(data), engine, 																		all_params[string(engine)]...)
+		
 	end
 end
 
@@ -984,12 +1229,12 @@ md"""
 """
 
 # ╔═╡ cf83b88a-68aa-11eb-07e1-1ddc5da72910
-engines = [Gurobi, GLPK]; # Cbc, CPLEX, Clp (just LP)
+engines = [Gurobi]; # , CPLEX, Clp (just LP)
 
 # ╔═╡ b97ede18-6709-11eb-2133-8b91accb17cd
 begin
-	if run_experiment	
-		experiments, objective_values = benchmark_engines(data, engines, all_params)
+	if run_experiment
+		experiments, objective_values = benchmark_engines(deepcopy(data), engines, 																all_params)
 		add_experiment!(engine_metrics, experiments, engines, objective_values)
 	end
 end;
@@ -1086,7 +1331,7 @@ function plot_benchmark!(engine_metrics, sorted_engines, tech_weights, engines)
 	# -----
 	solver_names = [i[1] for i in sorted_engines]
 	solver_values = [i[2] for i in sorted_engines]
-	aggregated = plot(solver_names, solver_values, leg=:topleft, label="Tech and business metrics", m=:o)
+	aggregated = bar(solver_names, solver_values, leg=:topright, label="Cumulative")
 	xlabel!("Engine")
 	ylabel!("Weighted sum")
 	title!("Engine rank")
@@ -1186,32 +1431,53 @@ md"""
 
 ## Next steps
 
-OR-Tools
-
-- Implement OR-tools engine and benchmark.
-
-
-Mathematical model
+`lazy_model()`
 
 - Replace MTZ sub-tours constraints with **lazy constraints as [callbacks](https://jump.dev/JuMP.jl/v0.21.1/callbacks/index.html#Available-solvers-1).**
 
-- References: Toth, J-B VRP, [Gurobi TSP](https://www.gurobi.com/documentation/9.0/examples/tsp_py.html), [Gurobi VRP](https://support.gurobi.com/hc/en-us/community/posts/360057640171-VRP-model-is-infeasible), 
+- Goal: ~20ms for 100 nodes.
 
-Data generation
+- Resources: Docs Diego, Toth, J-B VRP, [Gurobi TSP](https://www.gurobi.com/documentation/9.0/examples/tsp_py.html), [Gurobi VRP](https://support.gurobi.com/hc/en-us/community/posts/360057640171-VRP-model-is-infeasible), 
+
+----
+
+`solve_or_tools()`
+
+- Implement OR-tools engine and benchmark
+
+-  Resources: .py Diego and [docs](https://developers.google.com/optimization/routing/vrptw)
+
+----
+
+`Data generation`
 
 - Add bigger datasets such as [Homberger](https://www.sintef.no/projectweb/top/vrptw/homberger-benchmark/) and [Russell](https://neo.lcc.uma.es/vrp/vrp-instances/capacitated-vrp-with-time-windows-instances/).
 
-Heuristic engine
+----
+
+`solve_heuristic()`
 
 - Develop heuristic algorithms. Checkout [Nodal.jl](https://github.com/phrb/NODAL.jl) and Engine.jl (local).
 
-Others
+----
+
+`Analysis`
+
+- Ver la propuesta de meter todos los post validadores al modelo y benchmark
+
+- Resources: [ppt](https://docs.google.com/presentation/d/13Nn6rNmHrv0Vgm8Os_clfuyPAFaRJwNMd9Boi0XuIl4/edit#slide=id.g8fd89a81d9_0_233)
+
+----
+
+`Others`
 
 - Plot solutions.
 
+- [Nextmv](https://docs.nextmv.io/latest/)
+
 - Heterogeneous RTs: different capacity and travel times.
 
-- New features: open and pickup/delivery.
+- New features: open and pickup/delivery
 
 - Check python implementations: [1](https://github.com/chkwon/vrpy), [2](https://github.com/chkwon/foodora-routing-problem).
 
@@ -1231,7 +1497,7 @@ More info at:
 # ╟─345a1756-624b-11eb-0e73-b99c01d7852d
 # ╟─3e591e1e-624b-11eb-3a49-e1c420a8a740
 # ╟─e3877146-6495-11eb-3fde-bd2e6806a7ef
-# ╟─750b95a0-6407-11eb-15b5-8b4a9805b7e8
+# ╠═750b95a0-6407-11eb-15b5-8b4a9805b7e8
 # ╟─07b52084-6989-11eb-3019-5776e45a0a1b
 # ╟─94bbeeae-6407-11eb-2bf5-a510e938453c
 # ╟─0657a1be-66ad-11eb-233d-15f3f93307e4
@@ -1244,9 +1510,15 @@ More info at:
 # ╟─d537230c-68be-11eb-2bd8-b9c93c0278f5
 # ╟─b860657c-67d6-11eb-0240-6b84b814c3a9
 # ╟─33674ca8-67d5-11eb-1d83-89ed81652979
-# ╟─403d1c28-67d5-11eb-3a0f-e92303f07e3f
+# ╠═403d1c28-67d5-11eb-3a0f-e92303f07e3f
 # ╟─f7c7f9c0-6632-11eb-27bb-e7a49dde68b8
 # ╟─2f455ffe-6634-11eb-36b5-d7d9c8e2decf
+# ╠═bbb41a3a-6f8e-11eb-02c9-fbd9f8088eca
+# ╠═a9895574-6fc4-11eb-2667-a9387613508a
+# ╠═2935b8f0-6fb4-11eb-1e6d-b53b39837943
+# ╠═1f7a7e50-6fa4-11eb-15f7-1957b7385bab
+# ╠═9159403c-6fc3-11eb-1435-7decdb89f2ad
+# ╠═e0739df2-6f8e-11eb-0341-e5e67b838f21
 # ╟─cda9bb12-6671-11eb-0494-476f9966741d
 # ╟─804bcac8-6706-11eb-1d8a-756a5afde359
 # ╟─48699cb4-6366-11eb-175d-8728ce809fea
@@ -1255,6 +1527,7 @@ More info at:
 # ╟─8ee45d66-67ce-11eb-0309-6b5c68f6f09c
 # ╟─ab90d342-67ce-11eb-338c-a155fa468e83
 # ╟─9d7b483c-67ce-11eb-359c-a38abb43f688
+# ╠═a69f3478-6f92-11eb-38cd-edb17d49d2eb
 # ╟─b9a63d6e-63f8-11eb-111f-afb7f1ae88c9
 # ╟─1972e386-6733-11eb-2e45-f50f5240c102
 # ╟─7743b4e8-6735-11eb-3ee7-117ee0d6b494
@@ -1273,20 +1546,21 @@ More info at:
 # ╟─a85fed86-68bf-11eb-2bca-9985e71090cb
 # ╟─b4ae58e8-6725-11eb-1414-05378b8960a4
 # ╟─c8c0906a-68cb-11eb-0ed0-7341082f74a0
-# ╟─3ff8d1dc-6988-11eb-20ef-e15cfb7d5814
+# ╟─82073998-6bbf-11eb-158c-455db68ee805
 # ╟─7413ed26-6729-11eb-09ce-f558ae459b6f
 # ╟─5e600f58-6735-11eb-3863-f7fd4a62cf35
 # ╠═7287f2d6-6729-11eb-0871-33c510dafd9e
 # ╟─b76fdaac-67c5-11eb-12d1-81ef3b411ad6
 # ╟─01680330-67c8-11eb-1a37-e34d1c3fb37c
 # ╟─abac3bc8-67ea-11eb-044e-c1d760fceb77
+# ╠═af883f14-6a77-11eb-0bac-0be99ccd9413
 # ╟─753a39a6-6726-11eb-0444-afebdae52f2d
 # ╟─eba9c380-67c7-11eb-03a8-0b1b0228308c
 # ╟─2aab45fe-6758-11eb-2687-ad29d7f3a7a2
 # ╟─c556da4e-67c7-11eb-2205-9585ae72e01c
 # ╟─7e30b296-6724-11eb-21a0-b9ab1a61e0e5
 # ╠═cf83b88a-68aa-11eb-07e1-1ddc5da72910
-# ╟─b97ede18-6709-11eb-2133-8b91accb17cd
+# ╠═b97ede18-6709-11eb-2133-8b91accb17cd
 # ╟─9fef3a2a-6735-11eb-3854-7d09363e5865
 # ╠═11ca652a-676d-11eb-1f19-a9360701370f
 # ╠═cb698a20-6771-11eb-2bbc-d5943bdb0319
