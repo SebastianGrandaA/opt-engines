@@ -89,14 +89,159 @@ begin
 	end
 
 	mutable struct Solution
-		routes    ::Dict{Any,Any}
-		objective ::Any
-		status    ::Any
+		routes        ::Vector{Any}
+		arrival_times ::Vector{Float64}
+		units         ::Vector{Float64}
+		objective     ::Any
+		status        ::Any
 	end
 end;
 
+# ╔═╡ 8603086e-7129-11eb-1bf1-37093e6afb28
+md"""
+There are multiple formulations. 
+
+**We are given**
+
+- Complete graph $G(V, A)$.
+
+- Time $\forall (i,j) \in A: t_{ij}$.
+
+- Set of customers $D = V \setminus \left \{ 0, n+1 \right \}$.
+
+- Demand $\forall i \in D: d_{i}$.
+
+- Service time $\forall i \in D: s_{i}$.
+
+- Time windows $\forall i \in D: [e_{i}, l_{i}]$.
+
+- Set of homogeneous couriers $RT$.
+
+- Capacity $\forall i \in RT: C_{i}$.
+
+- Maximum routing time $\forall i \in RT: T_{i}$.
+
+**Define**
+
+- Binary $X_{ijk}$: $1$ if arc $(i,j) \in A$ is selected for courier $k \in RT$; $0$ otherwise.
+
+- Integer $T_{ik}$: arrival time of courier $k \in RT$ at node $i \in V$.
+
+
+**Objectives**
+
+We can implement different objectives:
+
+1. For efficient routes, **minimize the total travel times**
+
+$MIN \sum_{k \in RT} \sum_{(i,j) \in A} t_{ij} X_{ijk}$
+
+2. For fast routes, **minimize the makespan (length of the longest route)**
+
+$MIN$
+
+3. For critical orders (s.a. black stores), **minimize the total arrival times**
+
+$MIN$
+
+4. For longer routes, **minimize the quantity of RTs** (or routes).
+
+$MIN$
+
+Then, apply hierarchically [1], trade them off [2] or according to the state of the operation:
+
+1. First minimize the number of RTs to fulfill the orders and then minimize the total travel times using that ammount of RTs.
+
+2. Minimize the total travel time with soft time windows and add a penalty for each minute late arriving at customer' location.
+
+-----
+
+**Constraints**
+
+1. Each customer is assigned to exactly one route.
+
+$C$
+
+2. Source to sink path in $G$ for each RT $k$.
+
+$C$
+
+$C$
+
+$C$
+
+3. Time windows 
+
+$C | BIGM_{ij} = max( b_{i} + s_{i} + t_{ij} - a_{j} ; 0)$ (la restriccion linealizada)
+
+$C$
+
+4. RT capacity
+
+$C$
+
+
+
+----
+
+**Apprach**
+
+
+**Facts**
+
+
+- The linear relaxation of this three-index model provides very weak lower bounds.
+
+- To produce better lower bounds, reformulate as a set partitioning model: Elementary Shortest Path Problem with Resource Constraints (ESPPRC). 
+
+- The ESPPRC generates a set of all feasible routes for the VRPTW and decides if a route visits a certain customer considering two constraints: load $\leq$ capacity and arrival time $\in$ time window.
+
+- However, ESPPRC model contains a huge number of variables (one per feasible route).
+
+- To handle this huge number of variables, implement a column generation algorithm.
+
+
+- Furthermore, the two-index model contains an exponential number of time windows and subtour elimination constraints. Solution: apply dinamically.
+
+
+
+**Idea**
+
+Solve the CVRPTW with a Branch-and-Price algorithm [1, 2] in which:
+
+- The ESPPRC arises as the subproblem of finding feasible routes (columns) with negative reduced cost that are iteratively added to the restricted master problem.
+
+- Solve this ESPPRC with pulse and labeling algorithms [3] and the monodirectional dynamic programming method [4].
+
+- Linear relaxations of this are solved by column generation.
+
+
+
+Limit the solver to one second in the ESPPRC because it is the bottle neck!
+add all constraints in labelling?
+
+
+
+**References**
+
+[1] Toth & Vigo Chapter 5: https://epubs.siam.org/doi/10.1137/1.9781611973594.ch5
+[2] https://doi.org/10.1287/trsc.2014.0582
+[3] https://onlinelibrary.wiley.com/doi/abs/10.1002/net.20033
+[4] Feillet, D., Dejax, P., Gendreau, M., Gueguen, C., 2004. An exact algorithm for the elementary shortest path problem with resource constraints: Application to some vehicle routing problems. 
+
+
+Then, of course, we can dynamically solve the VRP with reoptimization approaches (see chapter 11.3.1.2 of [1])
+
+To sum up:
+
+Formulating the problem will give us the flexibility to directly switch between different objectives depending on the state of the operations and will reduce times of filters such as prospect validations by adding model constraints
+
+"""
+
 # ╔═╡ 94bbeeae-6407-11eb-2bf5-a510e938453c
 md"""
+[REEMPLAZADO POR LO DE ARRIBA]
+
 
 **Assumptions**
 
@@ -200,7 +345,12 @@ Three main data sources:
 
 - Randomly generated.
 
-**Note**: last two nodes should be the store (`length - 1`) and the sink (`length`).
+
+The computational complexity is determined by:
+- Relative width of time windows: wide increase the feasible solution space.
+- Distribution of locations: Clustered (C), Random (R) and mixed (RC)
+
+**Note**: last two nodes should be the store (`n-1`) and the sink (`n`).
 """
 
 # ╔═╡ 1a078ece-698a-11eb-0e77-edbb196ffcd6
@@ -434,138 +584,491 @@ We will benchmark the following solvers:
 Using [JuMP](https://github.com/jump-dev/JuMP.jl) as the mathematical modeling language.
 """
 
-# ╔═╡ a9895574-6fc4-11eb-2667-a9387613508a
+# ╔═╡ 1bc11276-72d6-11eb-16b6-2b2f66b3d3bd
 """
-Returns the cycle in the permutation described by `perm_matrix` which includes
-`starting_ind`.
+Returns the routes for a given solution. Routes that start at the source
 """
+function get_routes(x_val, source::Int64, sink::Int64)
+	
+	first_nodes = @views findall(x -> x > 0.9, x_val[source, :])
+	final_routes = []
+	
+	for i in first_nodes
+
+		next = @views findfirst(x -> x > 0.9, x_val[i, :])
+		
+		if next isa Int64
+		
+			route = [source, i, next]
+
+			while next != sink && next isa Int64
+
+				current = next
+
+				next = @views findfirst(x -> x > 0.9, x_val[current, :])
+
+				if next isa Int64
+					push!(route, next)
+				end
+
+			end
+
+		else  
+			route = [source, i]
+		end
+		
+
+		push!(final_routes, route)
+
+	end
+	
+	return final_routes
+end;
+
+# ╔═╡ 30268d08-72e4-11eb-2998-e5998b88afab
 function find_cycle(perm_matrix, starting_ind = 1)
+	
     cycle = [starting_ind]
     prev_ind = ind = starting_ind
+
     while true
-        next_ind = findfirst(>(0.5), @views(perm_matrix[ind, 1:prev_ind-1]))
+
+		next_ind = findfirst(>(0.5), @views(perm_matrix[ind, 1:prev_ind-1]))
+
         if isnothing(next_ind)
-            next_ind = findfirst(>(0.5), @views(perm_matrix[ind, prev_ind+1:end])) +
+        
+			next_ind = findfirst(>(0.5), @views(perm_matrix[ind, prev_ind+1:end])) +
                        prev_ind
-        end
+
+        end		
+		
         next_ind == starting_ind && break
         push!(cycle, next_ind)
         prev_ind, ind = ind, next_ind
+
     end
+	
     cycle
 end;
 
-# ╔═╡ 804bcac8-6706-11eb-1d8a-756a5afde359
-function format_routes(X, store::Int64, dummy_store::Int64, 												total_time::Matrix{Float64})
-
-	x_val = JuMP.value.(X).data
-	first_nodes = findall(x -> x > 0.9, x_val[store, :])
-	routes_times = Dict()
-
-	for i in first_nodes
-
-		next = findfirst(x -> x > 0.9, x_val[i, :])
-		route = [store, i, next]
-		cc = total_time[store, i] + total_time[i, next]
-
-		while next != dummy_store
-
-			current = next
-			next = findfirst(x -> x > 0.9, x_val[current, :])
-			push!(route, next)
-			cc += total_time[current, next]
-
-		end
-
-		routes_times[route] = cc
-
+# ╔═╡ b74c997a-72e4-11eb-3510-1583a16918ff
+function get_cycles(X, source, sink)
+	
+	perm_matrix = JuMP.value.(X).data
+    N = Base.size(perm_matrix, 1)
+    remaining_inds = Set(1:N)
+	
+	# Botar depot
+	cycles = get_routes(perm_matrix, source, sink)
+	setdiff!(remaining_inds, unique(vcat(cycles...)))
+	
+    while length(remaining_inds) > 0
+		
+        cycle = find_cycle(perm_matrix, first(remaining_inds))
+		
+        push!(cycles, cycle)
+		
+        setdiff!(remaining_inds, cycle)
+		
 	end
-
-	return routes_times
+	
+   	return cycles
 end;
 
-# ╔═╡ cda9bb12-6671-11eb-0494-476f9966741d
-function mtz_model(instance::Instance, solver::Module, solver_params::Pair...)
-    
+# ╔═╡ a4aa3352-72d0-11eb-38e6-ad004408b054
+has_subtour(route, source, sink) = route[1] != source && route[end] != sink;
+
+# ╔═╡ fc91fb98-72cd-11eb-1246-7b72dc2044cc
+function violate_subtour_capacity(route, source, sink, capacity, cum_demand)::Bool
+	return has_subtour(route, source, sink) || cum_demand > capacity
+end;
+
+# ╔═╡ ac42497c-72d2-11eb-3e7b-794bd578e5ac
+min_couriers(demand, capacity) = demand / capacity;
+
+# ╔═╡ bcb00170-72ce-11eb-04eb-61c2f3a5d5a6
+function violate_time_windows(route, late_times, times)::Bool
+	
+	cum_time = 0
+	
+	for i in route
+		
+		if i <= length(late_times) - 1 # only customers
+			
+			cum_time += times[i, i+1] # + service_times[i]
+			
+			if cum_time > late_times[i]
+				
+				return true
+				
+			end
+		end
+	end
+	
+	return false
+end;
+
+# ╔═╡ b4647d92-72d6-11eb-1ff9-77c3db9ae6f2
+function remove_invalid(model, X, source, sink, capacity, demand, late_times, times)
+
+    routes = get_routes(X, source, sink)
+	
+	if length(routes) > 1
+		
+		for route in routes
+
+			zipped = zip(route[1:end-1], route[2:end])
+
+			if violate_subtour_capacity(route, capacity, demand) # 5.17
+
+				@info("Invalidating with soubtour or capacity constraints")
+
+				thr = min_couriers(demand, capacity)
+
+				@constraint(model, sum(X[i, j] for (i,j) in zipped) >= thr)
+
+			elseif violate_time_windows(route, late_times, times) # 5.18
+
+				@info("Invalidating with TW constraint")
+
+				thr = length(route) - 1 # set of arcs in route 
+
+				@constraint(model, sum(X[i, j] for (i,j) in zipped) <= thr)
+
+			end
+
+		end
+		
+		return true
+		
+	end
+	
+	return false
+end;
+
+# ╔═╡ 8b4bc38e-7196-11eb-315c-0922c360b5f6
+"""
+"""
+function callback_funct(model, X, source, sink, capacity, demand, late_times, times)
+	
+	return function vrp_callback(cb_data)
+		
+        X_vals = callback_value.(Ref(cb_data), X)
+		
+        any(x -> !(x ≈ round(Int, x)), X_vals) && return # only integer solutions	
+
+		routes = get_cycles(X_vals, source, sink)
+		
+		if length(routes) > 1
+						
+			for route in routes
+					
+				zipped = zip(route[1:end-1], route[2:end])
+				
+				thr = - 10
+				
+				cum_demand = sum([demand[i] for i in route if i <= length(demand)])
+				
+				if violate_subtour_capacity(route, source, sink, capacity, cum_demand) # 5.17
+					
+					@warn("Subtour or capacity violated by route: $route")
+					
+					thr = min_couriers(cum_demand, capacity)
+					
+					con = @build_constraint(sum(X[i, j] for (i,j) in zipped) >= thr)
+					
+				elseif violate_time_windows(route, late_times, times) # 5.18
+					
+					@warn("TW violated by route: $route")
+					
+					thr = length(route) - 1 # set of arcs in route 
+					
+					con = @build_constraint(sum(X[i, j] for (i,j) in zipped) <= thr)
+				
+				end
+				
+				if thr > 0
+					
+					@info("Submitting lazy constraint")
+					
+					MOI.submit(model, MOI.LazyConstraint(cb_data), con)
+					
+				end
+
+			end
+			
+		else
+			
+			@info("Found full routes with no subtours.")
+            
+			return nothing
+			
+        end
+    end
+end;
+
+# ╔═╡ 6b72d8f2-72d5-11eb-2b47-f9b3330f0188
+"""
+el if i <= length() es redundante porque igual late_times tiene customers + 2
+"""
+
+# ╔═╡ e0739df2-6f8e-11eb-0341-e5e67b838f21
+"""
+
+**Idea**
+
+- Cutting plane method embedded into a Branch-and-Bound procedure. 
+- Cutting planes are added in each node of the search three to thighten the LP relaxation as much as possible.
+- Therefore, **time windows and capacity** constraints are added dynamically with callbacks (lazy constraints).
+
+
+**Constraints**
+
+"""
+function lazy_model(instance::Instance, solver::Module, solver_params::Pair...)
+	
     # Parameters
     # -----
 
-	n_locations = Base.size(instance.travel_times, 1) # total nodes
-	LC = 1:n_locations
+	V_ = Base.size(instance.travel_times, 1) # nodes
+	V = 1:V_
     
-	n_deliveries = length(instance.service_times) # customers
-    DL = 1:n_deliveries
+	D_ = length(instance.service_times) # customers
+    D = 1:D_
 
-    n_RTs = n_deliveries # RTs
-    RT = 1:n_RTs
+    source = V_ - 1
+    sink = V_
+	
+    RT_ = D_ # RTs
+    RT = 1:RT_
 
-    store = n_locations - 1 # source node
-    dummy_store = deepcopy(n_locations) # sink node
-
-    items_orders, capacity, max_travel_time = instance.items_orders, 												instance.RT_capacity, instance.RT_max_route_time
+    d,C,T = instance.items_orders, instance.RT_capacity, instance.RT_max_route_time
 
 	early_times = [instance.early_times; 0; 0]
-	late_times = [instance.late_times; 0; max_travel_time]
-    
-    total_time = instance.travel_times # calculate_total_time(instance.travel_times, 											instance.service_times, LC, DL)
-	
-	bigT = max_travel_time * 2
-    bigQ = capacity + maximum(items_orders)
-    
+	late_times = [instance.late_times; 0; T]
+    time = instance.travel_times
 
     # Formulation
     # -----
 
 	model = Model(optimizer_with_attributes(solver.Optimizer, solver_params...))
 
-	@variable(model, X[LC, LC], Bin) # select arc (i, j)
-	@variable(model, arrival[LC] >= 0) # arrival time at each node i
-	@variable(model, units[LC] >= 0) # units or volume RT carries for the route.
+	@variable(model, X[V, V] >= 0, Int)
 
-	# minimize the total route time
-	@objective(model, Min, sum(total_time[i,j] * X[i,j] for i in LC, j in LC)) 
+	@objective(model, Min, sum(time[i,j] * X[i,j] for i in V, j in V)) 
 	
-	# each delivery location must be visited exactly once.
-	@constraint(model, [i in DL], sum(X[i,j] for j in LC) == 1) 
+	@constraint(model, [i in D], sum(X[i,j] for j in V) == 1)
+	@constraint(model, [j in D], sum(X[i,j] for i in V) == 1)
 	
-	# if selected, ...
-	@constraint(model, [i in LC, j in DL], units[j] >= units[i] + items_orders[j] - 														bigQ * (1 - X[i,j])) 
-		
-	# units or volume carried by RT should not exceed capacity.
-	@constraint(model, [i in LC], 0 <= units[i] <= capacity) 
-		
-	# store is the beginning for all the routes (not all RTs have to be used).
-	@constraint(model, sum(X[store, j] for j in LC) <= n_RTs) 
+	# separar
+	# @constraint(model, [k in D], sum(X[i,k] for i in V) - sum(X[k,j] for j in V)==0)
 	
-	# for each delivery location, ...
-	@constraint(model, [h in DL], sum(X[i, h] for i in LC) - sum(X[h,j] for j in LC) 									== 0) 
+	@constraint(model, X[source, sink] <= RT_ - 1)
+	@constraint(model, [i in D, j in D], X[i,j] + X[j,i] <= 1)
+	
+	@constraint(model, sum(X[source, j] for j in V) == RT_)
+	
+	@constraint(model, sum(X[i, sink] for i in V) == sum(X[source, j] for j in V))
+	
+	@constraint(model, [i in V], X[i, source] == 0)
+	@constraint(model, [i in V], X[sink, i] == 0) 
+	@constraint(model, [i in V], X[i,i] == 0)
+	
+	
+    # Optimize!
+    # -----
+	
+	callback = callback_funct(model, X, source, sink, C, d, late_times, time)	
+	
+	MOI.set(model, MOI.LazyConstraintCallback(), callback)
+	
+	boo_remove = true
+	
+    # while boo_remove
 
-	@constraint(model, sum(X[i, dummy_store] for i in LC) == sum(X[store, j] for j 																				in LC))
+	optimize!(model)
+	
+	# boo_remove = remove_invalid(model, X, source, sink, C, d, late_times, time)
 		
-	# if node selected, then the arrival time should ...
-	@constraint(model, [i in LC, j in LC], arrival[j] >= arrival[i] + 															total_time[i,j] - bigT * (1 - X[i,j]))
-		
-	# arrival at node should be between time window.
-	@constraint(model, [i in LC], early_times[i] <= arrival[i] <= late_times[i]) 
-		
-	@constraint(model, [i in LC], X[i, store] == 0)
-		
-	@constraint(model, [i in LC], X[dummy_store, i] == 0) 
-		
-	# should not select the diagonal of the matrix.
-	@constraint(model, [i in LC], X[i, i] == 0) 
+    # end
+	
+	status = JuMP.termination_status(model)
+	
+	final_route = get_routes(JuMP.value.(X).data, source, sink)
+	
+	return Solution(final_route, [], [], objective_value(model), status)
+	
+end;
 
+# ╔═╡ 48c406c2-71c6-11eb-0d89-c90f3642a39d
+"""
+Validations
+-----
+
+[1] Arrival time should happen in time window
+[2] Total travel times should be less than max travel time
+[3] Demand carried should be less than capacity
+[4] Each customer is visited once.
+[5] Objective value of solution is sum of route times
+[6] All customers fulfilled.
+
+
+"""
+function validate_solution(solution, data)
+	routes = solution.routes
+	arrivals = solution.arrival_times
+	units = solution.units
+	objective = solution.objective
+	
+	times = data.travel_times
+	early = data.early_times
+	late = data.late_times
+	demand = data.items_orders
+	max_capacity = data.RT_capacity
+	max_time = data.RT_max_route_time
+	
+	global_time = 0
+
+	for route in routes
+		
+		total_time, total_demand = 0, 0
+		
+		for c in 1:length(route) - 1
+
+			total_time += times[route[c], route[c+1]]
+			
+			if route[c] <= length(data.service_times) # only customers
+				
+				@assert arrivals[route[c]] <= late[route[c]] # 1
+			
+			end
+			
+		end
+		
+		total_demand = units[route[end-2]]
+		
+		@assert total_time <= max_time # 2
+
+		@assert total_demand <= max_capacity # 3
+		
+		global_time += total_time
+		
+	end
+	
+	all_nodes = vcat(routes...)
+
+	@assert length(all_nodes) - 2*(length(routes)-1)==length(unique(all_nodes)) # 4
+
+	@assert round(global_time) == round(objective) # 5
+
+	@assert unique(sort(all_nodes)) == collect(1:length(arrivals)) # 6
+	
+end;
+
+# ╔═╡ a0cd2ef2-71c6-11eb-1efa-15c088d4b8d0
+# validate_solution(lm, deepcopy(data))
+
+# ╔═╡ 39d05d1e-7234-11eb-0338-abc06b474347
+# @benchmark lazy_model(deepcopy(data), engine, all_params[string(engine)]...)
+
+# ╔═╡ 3c8221d6-718b-11eb-1465-171acd331599
+# mtzm = mtz_model(deepcopy(data), engine, all_params[string(engine)]...)
+
+# ╔═╡ d3ee2f86-71c9-11eb-33bf-9391c8ec534c
+# validate_solution(mtzm, deepcopy(data))
+
+# ╔═╡ 64376310-71ab-11eb-2719-eff1cb5b7c7f
+# @benchmark mtz_model(deepcopy(data), engine, all_params[string(engine)]...)
+
+# ╔═╡ cda9bb12-6671-11eb-0494-476f9966741d
+"""
+MTZ
+-----
+
+**Constraints**
+
+(1) Each customer is visited only once.
+(2) Flow in == flow out
+(3) Availability on RT quantity.
+
+(4) Subtour elimination and connectivity.
+(5) Capacity should not be exceeded.
+(6) Routes should be from source -> sink.
+
+(7) Schedule feasibility: arrival at node j should be after visiting node i
+(8) Time windows.
+
+(9-10) Source and sink nodes should be visited first and last respectively
+(11) Avoid cycling
+
+"""
+function mtz_model(instance::Instance, solver::Module, solver_params::Pair...)
+
+    # Parameters
+    # -----
+
+	V_ = Base.size(instance.travel_times, 1) # nodes
+	V = 1:V_
+    
+	D_ = length(instance.service_times) # customers
+    D = 1:D_
+
+    source = V_ - 1
+    sink = V_
+	
+    RT_ = D_ # RTs
+    RT = 1:RT_
+
+    d,C,T = instance.items_orders, instance.RT_capacity, instance.RT_max_route_time
+
+	early_times = [instance.early_times; 0; 0]
+	late_times = [instance.late_times; 0; T]
+    time = instance.travel_times
+	
+	bigT = T * 2
+    bigQ = C + maximum(d)
+    
+
+    # Formulation
+    # -----
+
+	model = Model(optimizer_with_attributes(solver.Optimizer, solver_params...))
+	
+	@variable(model, X[V, V], Bin)
+	@variable(model, A[V] >= 0) # arrival time
+	@variable(model, U[V] >= 0) # units carried in route
+
+	@objective(model, Min, sum(time[i,j] * X[i,j] for i in V, j in V)) 
+	
+	@constraint(model, [i in D], sum(X[i,j] for j in V) == 1)
+	@constraint(model, [k in D], sum(X[i,k] for i in V) - sum(X[k,j] for j in V)==0)
+	@constraint(model, sum(X[source, j] for j in V) <= RT_)
+	
+	@constraint(model, [i in V, j in D], U[j] >= U[i] + d[j] - bigQ * (1 - X[i,j]))
+	@constraint(model, [i in V], 0 <= U[i] <= C)
+	@constraint(model, sum(X[i, sink] for i in V) == sum(X[source, j] for j in V))
+	
+	@constraint(model, [i in V, j in V], A[j] >= A[i] + time[i,j] - bigT*(1-X[i,j]))
+	@constraint(model, [i in V], early_times[i] <= A[i] <= late_times[i])
+	
+	@constraint(model, [i in V], X[i, source] == 0)
+	@constraint(model, [i in V], X[sink, i] == 0) 
+	@constraint(model, [i in V], X[i,i] == 0)
+	
+	
     # Optimize!
     # -----
 
     optimize!(model)
     
-    status  = JuMP.termination_status(model)
+    status = JuMP.termination_status(model)
 	
-	dict_routes_times = format_routes(X, store, dummy_store, total_time)
-    
-	return Solution(dict_routes_times, objective_value(model), status)
+	final_rout = get_routes(JuMP.value.(X).data, source, sink)
+	final_arr = @views collect(JuMP.value.(A))
+	final_un = @views collect(JuMP.value.(U))
 	
+	return Solution(final_rout, final_arr, final_un, objective_value(model), status)
+
 end;
 
 # ╔═╡ bbb41a3a-6f8e-11eb-02c9-fbd9f8088eca
@@ -575,32 +1078,17 @@ function optimal_routing(instance::Instance, solver::Module, solver_params::Pair
 	
 	if string(solver) in callback_feature
 		
-		@warn "using model with lazy constraints with " * string(solver)
-		
-		# lazy_model(instance, solver, solver_params...)
-		mtz_model(instance, solver, solver_params...) # delete
+		@warn("Using model with lazy constraints in " * string(solver))
+
+		lazy_model(instance, solver, solver_params...)
 		
 	else
 		
-		@warn "using MTZ model with " * string(solver)
+		@warn("Using model with normal constraints in " * string(solver))
 		
 		mtz_model(instance, solver, solver_params...)
 		
 	end	
-end;
-
-# ╔═╡ 48699cb4-6366-11eb-175d-8728ce809fea
-function calculate_total_time(
-		travel_times::Matrix{Float64}, service_times::Vector{Int64}, 						LC::UnitRange{Int64}, DL::UnitRange{Int64})
-
-	for i in LC, j in LC
-		if i in DL
-			travel_times[i, j] += service_times[i]
-		end
-	end
-	
-	return travel_times
-	
 end;
 
 # ╔═╡ 97222556-6366-11eb-03b2-e78c4247ccdf
@@ -850,192 +1338,6 @@ For randomly generated instances: $(@bind size Slider(1:300, default=10, show_va
 
 """
 
-# ╔═╡ 2935b8f0-6fb4-11eb-1e6d-b53b39837943
-"""
-Returns a list of cycles from the permutation described by `perm_matrix`.
-"""
-function get_cycles(perm_matrix)
-    N = size(perm_matrix, 1)
-    remaining_inds = Set(1:N)
-    cycles = Vector{Int}[]
-    while length(remaining_inds) > 0
-        cycle = find_cycle(perm_matrix, first(remaining_inds))
-        push!(cycles, cycle)
-        setdiff!(remaining_inds, cycle)
-    end
-    cycles
-end;
-
-# ╔═╡ 1f7a7e50-6fa4-11eb-15f7-1957b7385bab
-function remove_cycle_callback(model, X; symmetric::Bool = true)
-	
-	num_triggers = Ref(0)
-	
-	return function remove_cycles_callback(cb_data)
-        tour_matrix_val = callback_value.(Ref(cb_data), X)
-        any(x -> !(x ≈ round(Int, x)), X) && return
-
-        num_triggers[] += 1
-        cycles = get_cycles(X)
-
-        if length(cycles) == 1
-			@info "LC triggered ($(num_triggers[])); found a cycle!"
-			
-            return nothing
-        end
-
-        for cycle in cycles
-            
-			constr = symmetric ? 2 * length(cycle) - 2 : length(cycle) - 1
-            
-			cycle_constraint = @build_constraint( sum(X[cycle, cycle]) <= constr)
-			
-            MOI.submit(model, MOI.LazyConstraint(cb_data), cycle_constraint)
-			
-        end
-
-        num_cycles = length(cycles)
-        tot_cycles[] += num_cycles
-		
-		@info "LC triggered ($(num_triggers[])); disallowed $num_cycles cycles."
-
-    end
-end;
-
-# ╔═╡ 9159403c-6fc3-11eb-1435-7decdb89f2ad
-"""
-Find the (non-maximal-length) cycles in the current solution `X` and add constraints to the JuMP model to disallow them. Returns the number of cycles found.
-"""
-function remove_cycles!(model, tour_matrix; symmetric)
-    tour_matrix_val = value.(tour_matrix)
-    cycles = get_cycles(tour_matrix_val)
-    length(cycles) == 1 && return 1
-    for cycle in cycles
-        constr = symmetric ? 2 * length(cycle) - 2 : length(cycle) - 1
-        @constraint(model, sum(tour_matrix[cycle, cycle]) <= constr)
-    end
-    return length(cycles)
-end;
-
-# ╔═╡ e0739df2-6f8e-11eb-0341-e5e67b838f21
-"""Dantzig-Fulkerson-Johnson"""
-function lazy_model(instance::Instance, solver::Module, solver_params::Pair...; 							symmetric = true)
-	
-    # Parameters
-    # -----
-
-	n_locations = Base.size(instance.travel_times, 1) # total nodes
-	LC = 1:n_locations
-    
-	n_deliveries = length(instance.service_times) # customers
-    DL = 1:n_deliveries
-
-    n_RTs = n_deliveries # RTs
-    RT = 1:n_RTs
-
-    store = n_locations - 1 # source node
-    dummy_store = deepcopy(n_locations) # sink node
-
-    items_orders, capacity, max_travel_time = instance.items_orders, 												instance.RT_capacity, instance.RT_max_route_time
-
-	early_times = [instance.early_times; 0; 0]
-	late_times = [instance.late_times; 0; max_travel_time]
-    
-    total_time = instance.travel_times
-	
-	bigT = max_travel_time * 2
-    bigQ = capacity + maximum(items_orders)
-    
-
-    # Formulation
-    # -----
-
-	model = Model(optimizer_with_attributes(solver.Optimizer, solver_params...))
-
-	@variable(model, X[LC, LC], Bin)
-	@variable(model, arrival[LC] >= 0)
-	@variable(model, units[LC] >= 0)
-
-	@objective(model, Min, sum(total_time[i,j] * X[i,j] for i in LC, j in LC)) 
-	
-	
-	
-	
-	
-	# each delivery location must be visited exactly once.
-	@constraint(model, [i in DL], sum(X[i,j] for j in LC) == 1) 
-	
-	# if selected, ...
-	@constraint(model, [i in LC, j in DL], units[j] >= units[i] + items_orders[j] - 														bigQ * (1 - X[i,j])) 
-		
-	# units or volume carried by RT should not exceed capacity.
-	@constraint(model, [i in LC], 0 <= units[i] <= capacity) 
-		
-	# store is the beginning for all the routes (not all RTs have to be used).
-	@constraint(model, sum(X[store, j] for j in LC) <= n_RTs) 
-	
-	# for each delivery location, ...
-	@constraint(model, [h in DL], sum(X[i, h] for i in LC) - sum(X[h,j] for j in LC) 									== 0) 
-
-	@constraint(model, sum(X[i, dummy_store] for i in LC) == sum(X[store, j] for j 																				in LC))
-		
-	# if node selected, then the arrival time should ...
-	@constraint(model, [i in LC, j in LC], arrival[j] >= arrival[i] + 															total_time[i,j] - bigT * (1 - X[i,j]))
-		
-	# arrival at node should be between time window.
-	@constraint(model, [i in LC], early_times[i] <= arrival[i] <= late_times[i]) 
-		
-	@constraint(model, [i in LC], X[i, store] == 0)
-		
-	@constraint(model, [i in LC], X[dummy_store, i] == 0) 
-		
-	# should not select the diagonal of the matrix.
-	@constraint(model, [i in LC], X[i, i] == 0) 
-	
-
-	
-
-    # Optimize!
-    # -----
-	
-	cycles_callback = remove_cycle_callback(model, X, symmetric = symmetric)
-	
-	MOI.set(model, MOI.LazyConstraintCallback(), cycles_callback)
-
-    num_cycles = 2 # just something > 1
-
-    while num_cycles > 1
-        
-		t = @elapsed optimize!(model)
-		
-        status = JuMP.termination_status(model)
-		
-        num_cycles = remove_cycles!(model, X; symmetric = symmetric)
-		
-        tot_cycles[] += num_cycles
-		
-        iter[] += 1
-		
-		msj = num_cycles == 1 ? "found cycle!" : "disallowed $num_cycles cycles."
-		
-		@info "Iteration $(iter[]) took $(round(t, digits=3))s, $description"
-		
-    end
-	
-    tot_cycles[] -= 1 # remove the true cycle	
-	
-
-	status = JuMP.termination_status(model)
-	status == MOI.OPTIMAL || @warn(status)
-	cycles = get_cycles(value.(X))
-	length(cycles) == 1 || error("Did not elimate all subtours")
-	
-	dict_routes_times = format_routes(X, store, dummy_store, total_time)
-    
-	return Solution(dict_routes_times, objective_value(model), status)
-	
-end;
-
 # ╔═╡ 8b2d6f44-6992-11eb-2c77-25e14955515c
 md"""
 For Solomon datasets, there are many `.xml` files at the `Input` folder.
@@ -1115,9 +1417,9 @@ Finally, choose the parameters configuration.
 
 # ╔═╡ 7287f2d6-6729-11eb-0871-33c510dafd9e
 begin
-	time_limit = 1.0 # seconds
-	absolute_gap = .5
-	relative_gap = .5
+	time_limit = 10.0 # seconds
+	absolute_gap = .01
+	relative_gap = .01
 	stdout = false
 end;
 
@@ -1187,6 +1489,9 @@ Execute a single run: $(@bind run_single PlutoUI.CheckBox(false))
 
 # ╔═╡ af883f14-6a77-11eb-0bac-0be99ccd9413
 engine = Gurobi;
+
+# ╔═╡ 3c273b04-718b-11eb-1263-2def968b9848
+lm = lazy_model(deepcopy(data), engine, all_params[string(engine)]...)
 
 # ╔═╡ 753a39a6-6726-11eb-0444-afebdae52f2d
 begin
@@ -1423,7 +1728,7 @@ run_experiment == true ? sorted_engines : missing
 md"""
 **Decision**: $(engine) is a good idea - $(boo_worth)
 
-$(LocalResource("Outputs/EnginesBenchmark.svg", :width=>1000))
+$(LocalResource("./Outputs/EnginesBenchmark.svg", :width=>1000))
 """
 
 # ╔═╡ f5e81bda-6993-11eb-11eb-5bf3ee416fc9
@@ -1435,7 +1740,9 @@ md"""
 
 - Replace MTZ sub-tours constraints with **lazy constraints as [callbacks](https://jump.dev/JuMP.jl/v0.21.1/callbacks/index.html#Available-solvers-1).**
 
-- Goal: ~20ms for 100 nodes.
+- Implement Branch and Price framework.
+
+- Ultima corroboracion con Routing.jl VSC
 
 - Resources: Docs Diego, Toth, J-B VRP, [Gurobi TSP](https://www.gurobi.com/documentation/9.0/examples/tsp_py.html), [Gurobi VRP](https://support.gurobi.com/hc/en-us/community/posts/360057640171-VRP-model-is-infeasible), 
 
@@ -1497,8 +1804,9 @@ More info at:
 # ╟─345a1756-624b-11eb-0e73-b99c01d7852d
 # ╟─3e591e1e-624b-11eb-3a49-e1c420a8a740
 # ╟─e3877146-6495-11eb-3fde-bd2e6806a7ef
-# ╠═750b95a0-6407-11eb-15b5-8b4a9805b7e8
+# ╟─750b95a0-6407-11eb-15b5-8b4a9805b7e8
 # ╟─07b52084-6989-11eb-3019-5776e45a0a1b
+# ╟─8603086e-7129-11eb-1bf1-37093e6afb28
 # ╟─94bbeeae-6407-11eb-2bf5-a510e938453c
 # ╟─0657a1be-66ad-11eb-233d-15f3f93307e4
 # ╟─1a078ece-698a-11eb-0e77-edbb196ffcd6
@@ -1510,24 +1818,35 @@ More info at:
 # ╟─d537230c-68be-11eb-2bd8-b9c93c0278f5
 # ╟─b860657c-67d6-11eb-0240-6b84b814c3a9
 # ╟─33674ca8-67d5-11eb-1d83-89ed81652979
-# ╠═403d1c28-67d5-11eb-3a0f-e92303f07e3f
+# ╟─403d1c28-67d5-11eb-3a0f-e92303f07e3f
 # ╟─f7c7f9c0-6632-11eb-27bb-e7a49dde68b8
 # ╟─2f455ffe-6634-11eb-36b5-d7d9c8e2decf
-# ╠═bbb41a3a-6f8e-11eb-02c9-fbd9f8088eca
-# ╠═a9895574-6fc4-11eb-2667-a9387613508a
-# ╠═2935b8f0-6fb4-11eb-1e6d-b53b39837943
-# ╠═1f7a7e50-6fa4-11eb-15f7-1957b7385bab
-# ╠═9159403c-6fc3-11eb-1435-7decdb89f2ad
+# ╟─bbb41a3a-6f8e-11eb-02c9-fbd9f8088eca
+# ╠═b4647d92-72d6-11eb-1ff9-77c3db9ae6f2
+# ╠═1bc11276-72d6-11eb-16b6-2b2f66b3d3bd
+# ╠═30268d08-72e4-11eb-2998-e5998b88afab
+# ╠═b74c997a-72e4-11eb-3510-1583a16918ff
+# ╠═a4aa3352-72d0-11eb-38e6-ad004408b054
+# ╠═fc91fb98-72cd-11eb-1246-7b72dc2044cc
+# ╠═ac42497c-72d2-11eb-3e7b-794bd578e5ac
+# ╠═bcb00170-72ce-11eb-04eb-61c2f3a5d5a6
+# ╠═8b4bc38e-7196-11eb-315c-0922c360b5f6
+# ╠═6b72d8f2-72d5-11eb-2b47-f9b3330f0188
 # ╠═e0739df2-6f8e-11eb-0341-e5e67b838f21
+# ╟─48c406c2-71c6-11eb-0d89-c90f3642a39d
+# ╠═3c273b04-718b-11eb-1263-2def968b9848
+# ╠═a0cd2ef2-71c6-11eb-1efa-15c088d4b8d0
+# ╠═39d05d1e-7234-11eb-0338-abc06b474347
+# ╠═3c8221d6-718b-11eb-1465-171acd331599
+# ╠═d3ee2f86-71c9-11eb-33bf-9391c8ec534c
+# ╠═64376310-71ab-11eb-2719-eff1cb5b7c7f
 # ╟─cda9bb12-6671-11eb-0494-476f9966741d
-# ╟─804bcac8-6706-11eb-1d8a-756a5afde359
-# ╟─48699cb4-6366-11eb-175d-8728ce809fea
 # ╟─97222556-6366-11eb-03b2-e78c4247ccdf
 # ╟─971ff504-6633-11eb-06d4-09b91dac0ac6
 # ╟─8ee45d66-67ce-11eb-0309-6b5c68f6f09c
 # ╟─ab90d342-67ce-11eb-338c-a155fa468e83
 # ╟─9d7b483c-67ce-11eb-359c-a38abb43f688
-# ╠═a69f3478-6f92-11eb-38cd-edb17d49d2eb
+# ╟─a69f3478-6f92-11eb-38cd-edb17d49d2eb
 # ╟─b9a63d6e-63f8-11eb-111f-afb7f1ae88c9
 # ╟─1972e386-6733-11eb-2e45-f50f5240c102
 # ╟─7743b4e8-6735-11eb-3ee7-117ee0d6b494
@@ -1560,7 +1879,7 @@ More info at:
 # ╟─c556da4e-67c7-11eb-2205-9585ae72e01c
 # ╟─7e30b296-6724-11eb-21a0-b9ab1a61e0e5
 # ╠═cf83b88a-68aa-11eb-07e1-1ddc5da72910
-# ╠═b97ede18-6709-11eb-2133-8b91accb17cd
+# ╟─b97ede18-6709-11eb-2133-8b91accb17cd
 # ╟─9fef3a2a-6735-11eb-3854-7d09363e5865
 # ╠═11ca652a-676d-11eb-1f19-a9360701370f
 # ╠═cb698a20-6771-11eb-2bbc-d5943bdb0319
