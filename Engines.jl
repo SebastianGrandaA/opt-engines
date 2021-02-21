@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.12.20
+# v0.12.21
 
 using Markdown
 using InteractiveUtils
@@ -15,7 +15,7 @@ end
 
 # ╔═╡ e145c39e-624a-11eb-392e-25c51ea78395
 begin
-	using PlutoUI, Dates, Gurobi, Cbc, Clp, GLPK, JuMP, Random, BenchmarkTools, DataStructures, LinearAlgebra, Plots, LightXML
+	using PlutoUI, Dates, Gurobi, Cbc, Clp, GLPK, JuMP, Random, BenchmarkTools, DataStructures, LinearAlgebra, Plots, LightXML, PyCall
 	project_name = "Optimization engines" 
 	date = Dates.Date(Dates.now())
 	company = "Rappi"
@@ -560,11 +560,23 @@ md"""
 As-is approach.
 """
 
+# ╔═╡ 1316a098-7455-11eb-357a-992ca346cf65
+ortools = pyimport("ortools.constraint_solver.pywrapcp");
+
+# ╔═╡ 331f7c52-7455-11eb-168d-a3845d1a211f
+
+
+# ╔═╡ 72c68b7a-7455-11eb-1e52-d7752324d087
+manager = ortools.RoutingIndexManager(18, 20, 0)
+
 # ╔═╡ 403d1c28-67d5-11eb-3a0f-e92303f07e3f
 function solve_or_tools(instance::Instance)::Solution
 	
 	
 end;
+
+# ╔═╡ 0eb32b2e-7456-11eb-2e9d-e195fe724784
+
 
 # ╔═╡ f7c7f9c0-6632-11eb-27bb-e7a49dde68b8
 md"""
@@ -808,8 +820,10 @@ function callback_funct(model, X, source, sink, capacity, demand, late_times, ti
 end;
 
 # ╔═╡ 6b72d8f2-72d5-11eb-2b47-f9b3330f0188
-"""
+md"""
 el if i <= length() es redundante porque igual late_times tiene customers + 2
+
+**Prueba solo con el callback de TW y con los dos!!**
 """
 
 # ╔═╡ e0739df2-6f8e-11eb-0341-e5e67b838f21
@@ -1371,6 +1385,9 @@ begin
 	
 end;
 
+# ╔═╡ 23f824d6-7452-11eb-188a-49f801f9d60e
+data
+
 # ╔═╡ c8c0906a-68cb-11eb-0ed0-7341082f74a0
 md"""
 Quantity of nodes: $(Base.size(data.travel_times, 1))
@@ -1818,7 +1835,12 @@ More info at:
 # ╟─d537230c-68be-11eb-2bd8-b9c93c0278f5
 # ╟─b860657c-67d6-11eb-0240-6b84b814c3a9
 # ╟─33674ca8-67d5-11eb-1d83-89ed81652979
-# ╟─403d1c28-67d5-11eb-3a0f-e92303f07e3f
+# ╠═23f824d6-7452-11eb-188a-49f801f9d60e
+# ╠═1316a098-7455-11eb-357a-992ca346cf65
+# ╠═331f7c52-7455-11eb-168d-a3845d1a211f
+# ╠═72c68b7a-7455-11eb-1e52-d7752324d087
+# ╠═403d1c28-67d5-11eb-3a0f-e92303f07e3f
+# ╠═0eb32b2e-7456-11eb-2e9d-e195fe724784
 # ╟─f7c7f9c0-6632-11eb-27bb-e7a49dde68b8
 # ╟─2f455ffe-6634-11eb-36b5-d7d9c8e2decf
 # ╟─bbb41a3a-6f8e-11eb-02c9-fbd9f8088eca
