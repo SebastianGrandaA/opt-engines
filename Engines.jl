@@ -49,10 +49,6 @@ The **VRP** has been selected for this analysis because it represents one of the
 # ╔═╡ 750b95a0-6407-11eb-15b5-8b4a9805b7e8
 md"""
 ## Capacitated VRP with Time Windows
-
-For this first deliverable, an adaptation of the MTZ formulation has been developed. 
-
-CAMBIAR
 """
 
 # ╔═╡ 07b52084-6989-11eb-3019-5776e45a0a1b
@@ -79,6 +75,7 @@ begin
 	end
 
 	mutable struct Instance
+		nodes             ::Vector{Node}
 		travel_times      ::Matrix{Float64}
 		service_times     ::Vector{Int64}
 		early_times       ::Vector{Int64}
@@ -99,8 +96,6 @@ end;
 
 # ╔═╡ 8603086e-7129-11eb-1bf1-37093e6afb28
 md"""
-There are multiple formulations. 
-
 **We are given**
 
 - Complete graph $G(V, A)$.
@@ -138,15 +133,9 @@ $MIN \sum_{k \in RT} \sum_{(i,j) \in A} t_{ij} X_{ijk}$
 
 2. For fast routes, **minimize the makespan (length of the longest route)**
 
-$MIN$
-
 3. For critical orders (s.a. black stores), **minimize the total arrival times**
 
-$MIN$
-
 4. For longer routes, **minimize the quantity of RTs** (or routes).
-
-$MIN$
 
 Then, apply hierarchically [1], trade them off [2] or according to the state of the operation:
 
@@ -154,182 +143,18 @@ Then, apply hierarchically [1], trade them off [2] or according to the state of 
 
 2. Minimize the total travel time with soft time windows and add a penalty for each minute late arriving at customer' location.
 
------
 
 **Constraints**
 
-1. Each customer is assigned to exactly one route.
-
-$C$
-
-2. Source to sink path in $G$ for each RT $k$.
-
-$C$
-
-$C$
-
-$C$
-
-3. Time windows 
-
-$C | BIGM_{ij} = max( b_{i} + s_{i} + t_{ij} - a_{j} ; 0)$ (la restriccion linealizada)
-
-$C$
-
-4. RT capacity
-
-$C$
-
-
-
-----
-
-**Apprach**
-
-
-**Facts**
-
-
-- The linear relaxation of this three-index model provides very weak lower bounds.
-
-- To produce better lower bounds, reformulate as a set partitioning model: Elementary Shortest Path Problem with Resource Constraints (ESPPRC). 
-
-- The ESPPRC generates a set of all feasible routes for the VRPTW and decides if a route visits a certain customer considering two constraints: load $\leq$ capacity and arrival time $\in$ time window.
-
-- However, ESPPRC model contains a huge number of variables (one per feasible route).
-
-- To handle this huge number of variables, implement a column generation algorithm.
-
-
-- Furthermore, the two-index model contains an exponential number of time windows and subtour elimination constraints. Solution: apply dinamically.
-
-
-
-**Idea**
-
-Solve the CVRPTW with a Branch-and-Price algorithm [1, 2] in which:
-
-- The ESPPRC arises as the subproblem of finding feasible routes (columns) with negative reduced cost that are iteratively added to the restricted master problem.
-
-- Solve this ESPPRC with pulse and labeling algorithms [3] and the monodirectional dynamic programming method [4].
-
-- Linear relaxations of this are solved by column generation.
-
-
-
-Limit the solver to one second in the ESPPRC because it is the bottle neck!
-add all constraints in labelling?
-
-
-
-**References**
-
-[1] Toth & Vigo Chapter 5: https://epubs.siam.org/doi/10.1137/1.9781611973594.ch5
-[2] https://doi.org/10.1287/trsc.2014.0582
-[3] https://onlinelibrary.wiley.com/doi/abs/10.1002/net.20033
-[4] Feillet, D., Dejax, P., Gendreau, M., Gueguen, C., 2004. An exact algorithm for the elementary shortest path problem with resource constraints: Application to some vehicle routing problems. 
-
-
-Then, of course, we can dynamically solve the VRP with reoptimization approaches (see chapter 11.3.1.2 of [1])
-
-To sum up:
-
-Formulating the problem will give us the flexibility to directly switch between different objectives depending on the state of the operations and will reduce times of filters such as prospect validations by adding model constraints
-
-"""
-
-# ╔═╡ 94bbeeae-6407-11eb-2bf5-a510e938453c
-md"""
-[REEMPLAZADO POR LO DE ARRIBA]
-
-
-**Assumptions**
-
-- There are enought RTs to fulfill all orders: $Q_{orders} = Q_{RTs}$.
-
-- Homogenous RTs.
-
-- Operational time: travel time + service time.
-
-- Symmetric case: time to $t_{i->j} = t_{j->i}$.
-
-
-**We are given:**
-
-- Set of $DL$ delivery locations or customer places.
-
-- Set of $S$ source [1] and sink [2] locations for a given route.
-
-- Set of $LC = \left \{ 1, ..., DL + S \right \}$ locations or total nodes in the graph.
-
-- Set of $TT_{i, j}$ representing the travel time between node $i \in LC$ and $j \in LC$ calculated by Rappi maps.
-
-- Set of $RT = \left \{ 1, ..., rt \right \}$ couriers available.
-
-- Set of $d_{i}$ demands at location $i \in LC$ or the **quantity of items in the order.**
-
-- Set of $(E, L)_{i}$ time window pairs at location $i \in LC$: early and late times respectively.
-
-- Parameter $c_{i}$ as the capacity of courier $i \in RT$.
-
-- Parameter $MTT_{i}$ as the maximum travelling time of courier $i \in RT$.
-
-- Parameter $ST_{i}$ as the service time at location $i \in LC$.
-
-- Big $BT = MTT_{i} \times 2$ for $i \in RT$.
-
-- Big $BQ = c_{i} + max( d_{j} )$ for $i \in RT$ and $j \in LC$.
-
-
-**Decision variables**
-
-- Binary $X_{i, j}$ indicating whether arc $(i, j) \forall i \in LC, j \in LC$ is selected or not.
-
-- Integer $ARR_{i}$ indicating the time of arrival at node $i \in LC$.
-
-- Integer $UN_{i}$ indicating the units or volume carried by courier $i \in RT$.
-
-
-**Objective**
-
-The objective is to minimize the total route time. This time is calculated by the sum
-
-
-$MIN \sum_{i = 1}^{LC}\sum_{j = 1}^{LC} X_{i, j} \times ( ST_{i} + TT_{i, j} )$
-
-
-**Contraints**
-
-$\forall i \in DL: \sum_{j}^{DL} X_{i, j} = 1$
-
-
-$\forall i \in DL, j \in DL: UN_{j} \geq UN_{i} + d_{j} - BQ \times (1 - X_{i, j})$
-
-
-$\forall i \in DL: 0 \leq UN_{i} \leq c_{i}$
-
-
-$\sum_{j = 1}^{LC} X_{S[1], j} \leq RT$
-
-
-$\forall j \in DL: \sum_{i=1}^{LC} X_{i, j} - \sum_{i=1}^{LC} X_{j, i} = 0$
-
-
-$\sum_{i=1}^{LC} X_{i, S[2]} == \sum_{j=1}^{LC} X_{S[1], j}$
-
-
-$\forall i \in LC, j \in LC: ARR_{j} \geq ARR_{i} + TT_{i, j} - BT \times (1 - X_{i, j})$
-
-$\forall i \in LC: E_{i} \leq ARR_{i} \leq L_{i}$
-
-
-$\forall i \in LC: X_{i, S[1]} = 0$
-
-
-$\forall i \in LC: X_{S[2], i} = 0$
-
-
-$\forall i \in LC: X_{i, i} = 0$
+1. Each customer is visited only once.
+2. Flow in == flow out.
+3. Availability on RT quantity.
+4. Subtour elimination and connectivity.
+5. Capacity.
+6. Routes should be from source -> sink.
+7. Schedule feasibility: arrival at node j should be after visiting node i
+8. Time windows.
+9. Source and sink nodes should be visited first and last respectively
 
 """
 
@@ -357,7 +182,7 @@ The computational complexity is determined by:
 distance(n1::Node, n2::Node) = sqrt((n1.lat - n2.lat)^2 + (n1.long - n2.long)^2);
 
 # ╔═╡ 1d364b76-698a-11eb-2133-0f8f2c2259aa
-function calculate_time(nodes::Vector{Node}; digits = 2)
+function calculate_time(nodes::Vector{Node}; digits = 2, min_const = 1)
 	
     n_nodes = length(nodes)
 	store = n_nodes - 1 # start or source
@@ -366,7 +191,7 @@ function calculate_time(nodes::Vector{Node}; digits = 2)
 	
     for i in 1:n_nodes-1
         for j in i+1:n_nodes
-            d = distance(nodes[i], nodes[j])
+            d = distance(nodes[i], nodes[j]) * min_const
             time[i,j] = d
             time[j,i] = d
         end
@@ -374,6 +199,24 @@ function calculate_time(nodes::Vector{Node}; digits = 2)
 	
     time[store, dummy] = 0
     time[dummy, store] = 0
+	
+    return time
+	
+end;
+
+# ╔═╡ 380ba706-7516-11eb-37cf-491a74848301
+function time_ortools(nodes; min_const = 1)
+	
+    n_nodes = length(nodes)
+    time = zeros(n_nodes, n_nodes)
+	
+    for i in 1:n_nodes-1
+        for j in i+1:n_nodes
+            d = distance(nodes[i], nodes[j]) * min_const
+            time[i,j] = d
+            time[j,i] = d
+        end
+    end
 	
     return time
 	
@@ -413,7 +256,7 @@ function generate_data(size::Int64)::Instance
 	# Travel and service times
 	# -----
 
-	travel_times = calculate_time(nodes, minutes_constant = 3)
+	travel_times = calculate_time(nodes)
 	
 	service_times = rand(1:5, size) # dist historical waiting time at store. RBN.
 
@@ -482,8 +325,7 @@ function instance_OR_tools()::Instance
 	capacity = 15
 	max_travel_time = 35  
 	
-	return Instance(travel_times, service_times, early_times, late_times, 								items_orders, capacity, max_travel_time
-					)
+	return Instance(nodes, travel_times, service_times, early_times, late_times, 								items_orders, capacity, max_travel_time)
 	
 end;
 
@@ -539,7 +381,7 @@ function solomon_dataset(path_name)::Instance
 		push!(items_orders, find_element(i, "quantity") |> content |> to_float)
     end
 	
-	return Instance(travel_times, service_times, early_times, late_times, 								items_orders, capacity, max_travel_time)
+	return Instance(nodes, travel_times, service_times, early_times, late_times, 								items_orders, capacity, max_travel_time)
 end;
 
 # ╔═╡ b860657c-67d6-11eb-0240-6b84b814c3a9
@@ -560,23 +402,261 @@ md"""
 As-is approach.
 """
 
-# ╔═╡ 1316a098-7455-11eb-357a-992ca346cf65
-ortools = pyimport("ortools.constraint_solver.pywrapcp");
-
-# ╔═╡ 331f7c52-7455-11eb-168d-a3845d1a211f
-
-
-# ╔═╡ 72c68b7a-7455-11eb-1e52-d7752324d087
-manager = ortools.RoutingIndexManager(18, 20, 0)
-
-# ╔═╡ 403d1c28-67d5-11eb-3a0f-e92303f07e3f
-function solve_or_tools(instance::Instance)::Solution
+# ╔═╡ f66434d6-74a1-11eb-2921-1fe79330cd48
+function prepare_ortools(instance)::Instance
+	final_nodes = vcat(instance.nodes[end], instance.nodes[1:end-2])
+	instance.travel_times = time_ortools(final_nodes)
+	instance.nodes = final_nodes
+	instance.items_orders = vcat(0, instance.items_orders)
 	
-	
+	return instance
 end;
 
-# ╔═╡ 0eb32b2e-7456-11eb-2e9d-e195fe724784
+# ╔═╡ 9deb55ac-7521-11eb-1ec8-c9da0cc3bc13
+function get_objective(routes, times)
+	
+	global_time = 0
+	
+	for route in routes
+		
+		total_time = 0
+		
+		for c in 1:length(route) - 1
+				
+			total_time += times[route[c], route[c+1]]
+			
+		end
+		
+		global_time += total_time
+		
+	end
+	
+	return global_time
+end;
 
+# ╔═╡ 403d1c28-67d5-11eb-3a0f-e92303f07e3f
+"""
+Note that returns the results with the store as the last node, but it is processed with store at [0].
+"""
+function solve_or_tools(instance::Instance, solver_params::Pair...)::Solution
+	py"""
+	
+	from ortools.constraint_solver import routing_enums_pb2
+	from ortools.constraint_solver import pywrapcp
+	
+	def format_input(time_matrix, time_windows, num_RT, store, demand, capacity):
+	
+		data = {}
+		data['time_matrix'] = time_matrix
+		data['time_windows'] = time_windows
+		data['num_vehicles'] = num_RT
+		data['depot'] = store
+		data['demands'] = demand
+		data['vehicle_capacities'] = [capacity] * num_RT
+	
+		return data
+	
+	
+	def fake_data():
+
+		data = {}
+		data['time_matrix'] = [
+			[0, 6, 9, 8, 7, 3, 6, 2, 3, 2, 6, 6, 4, 4, 5, 9, 7],
+			[6, 0, 8, 3, 2, 6, 8, 4, 8, 8, 13, 7, 5, 8, 12, 10, 14],
+			[9, 8, 0, 11, 10, 6, 3, 9, 5, 8, 4, 15, 14, 13, 9, 18, 9],
+			[8, 3, 11, 0, 1, 7, 10, 6, 10, 10, 14, 6, 7, 9, 14, 6, 16],
+			[7, 2, 10, 1, 0, 6, 9, 4, 8, 9, 13, 4, 6, 8, 12, 8, 14],
+			[3, 6, 6, 7, 6, 0, 2, 3, 2, 2, 7, 9, 7, 7, 6, 12, 8],
+			[6, 8, 3, 10, 9, 2, 0, 6, 2, 5, 4, 12, 10, 10, 6, 15, 5],
+			[2, 4, 9, 6, 4, 3, 6, 0, 4, 4, 8, 5, 4, 3, 7, 8, 10],
+			[3, 8, 5, 10, 8, 2, 2, 4, 0, 3, 4, 9, 8, 7, 3, 13, 6],
+			[2, 8, 8, 10, 9, 2, 5, 4, 3, 0, 4, 6, 5, 4, 3, 9, 5],
+			[6, 13, 4, 14, 13, 7, 4, 8, 4, 4, 0, 10, 9, 8, 4, 13, 4],
+			[6, 7, 15, 6, 4, 9, 12, 5, 9, 6, 10, 0, 1, 3, 7, 3, 10],
+			[4, 5, 14, 7, 6, 7, 10, 4, 8, 5, 9, 1, 0, 2, 6, 4, 8],
+			[4, 8, 13, 9, 8, 7, 10, 3, 7, 4, 8, 3, 2, 0, 4, 5, 6],
+			[5, 12, 9, 14, 12, 6, 6, 7, 3, 3, 4, 7, 6, 4, 0, 9, 2],
+			[9, 10, 18, 6, 8, 12, 15, 8, 13, 9, 13, 3, 4, 5, 9, 0, 9],
+			[7, 14, 9, 16, 14, 8, 5, 10, 6, 5, 4, 10, 8, 6, 2, 9, 0],
+		]
+		data['time_windows'] = [
+			(0, 5),  # depot
+			(7, 12),  # 1
+			(10, 15),  # 2
+			(16, 18),  # 3
+			(10, 13),  # 4
+			(0, 5),  # 5
+			(5, 10),  # 6
+			(0, 4),  # 7
+			(5, 10),  # 8
+			(0, 3),  # 9
+			(10, 16),  # 10
+			(10, 15),  # 11
+			(0, 5),  # 12
+			(5, 10),  # 13
+			(7, 8),  # 14
+			(10, 15),  # 15
+			(11, 15),  # 16
+		]
+		data['num_vehicles'] = 4
+		data['depot'] = 0
+		data['demands'] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+		return data
+
+		
+	def format_result(manager, routing, solution, num_vehicles, store):
+	
+		time_dimension = routing.GetDimensionOrDie('Time')
+		total_time = 0
+		routes = []
+	
+		for vehicle_id in range(num_vehicles):
+	
+			route = []
+			index = routing.Start(vehicle_id)
+	
+			while not routing.IsEnd(index):
+				actual_node = manager.IndexToNode(index)
+				route.append(actual_node)
+	
+				index = solution.Value(routing.NextVar(index))
+	
+			actual_node = manager.IndexToNode(index)
+			route.append(actual_node)
+	
+			if len([i for i in route if i != store]) > 0 and route not in routes:
+				time_var = time_dimension.CumulVar(index)
+				total_time += solution.Min(time_var)
+				route[0] = num_vehicles + 1
+				route[-1] = num_vehicles + 1
+
+				routes.append(route)
+	
+		return routes, total_time
+
+	
+	
+	def main(instance, time_limit):
+		
+		# Data
+		# -----
+	
+		time_matrix = instance.travel_times
+		service_times = instance.service_times
+		service_time = int(min(service_times)) 
+		
+		max_route_time = int(instance.RT_max_route_time)
+		tw = [(i,j) for (i,j) in zip(instance.early_times, instance.late_times)]
+		tw.insert(0, (0, max_route_time))
+		demand = instance.items_orders
+		max_capacity = int(instance.RT_capacity)
+	
+		store = 0 # always for or-tools!
+		num_RTs = len(service_times)
+		data = format_input(time_matrix, tw, num_RTs, store, demand, max_capacity)
+		# data = fake_data()
+
+		# Build model
+		# -----
+	
+		manager = pywrapcp.RoutingIndexManager(len(data['time_matrix']), 														data['num_vehicles'], data['depot'])
+	
+		routing = pywrapcp.RoutingModel(manager)
+	
+	
+		# TW constraint
+		# -----
+	
+		def time_callback(from_index, to_index):
+			from_node = manager.IndexToNode(from_index)
+			to_node = manager.IndexToNode(to_index)
+			return data['time_matrix'][from_node][to_node]
+		
+		transit_callback_index = routing.RegisterTransitCallback(time_callback)
+		
+		routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+	
+		
+		# Capacity constraint
+		# -----
+	
+		def demand_callback(from_index):
+			from_node = manager.IndexToNode(from_index)
+			return data['demands'][from_node]
+
+		demand_callback_index=routing.RegisterUnaryTransitCallback(demand_callback)
+	
+		routing.AddDimensionWithVehicleCapacity(demand_callback_index, 0, 										data['vehicle_capacities'], True, 'Capacity')
+
+
+		# Add
+		# -----
+	
+		time = 'Time'
+	
+		routing.AddDimension(transit_callback_index, 10000,
+												max_route_time, False, time)
+	
+		time_dimension = routing.GetDimensionOrDie(time)
+	
+		for location_idx, time_window in enumerate(data['time_windows']):
+	
+			if location_idx == store:
+
+				continue
+			
+			index = manager.NodeToIndex(location_idx)
+
+			time_dimension.CumulVar(index).SetRange(int(time_window[0]), 																	int(time_window[1]))
+	
+	
+		for vehicle_id in range(data['num_vehicles']):
+	
+			index = routing.Start(vehicle_id)
+	
+			time_dimension.CumulVar(index).SetRange(int(data['time_windows'][0][0]), 												int(data['time_windows'][0][1]))
+	
+	
+		for i in range(data['num_vehicles']):
+	
+			routing.AddVariableMinimizedByFinalizer(
+				time_dimension.CumulVar(routing.Start(i)))
+	
+			routing.AddVariableMinimizedByFinalizer(
+				time_dimension.CumulVar(routing.End(i)))
+
+	
+		# Optimize!
+		# -----
+	
+		search_parameters = pywrapcp.DefaultRoutingSearchParameters()
+	
+		search_parameters.first_solution_strategy = (
+			routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC)
+	
+		search_parameters.time_limit.seconds = time_limit
+	
+		solution = routing.SolveWithParameters(search_parameters)
+	
+		r, t = format_result(manager, routing, solution, data['num_vehicles'], store)
+	
+		return r, t
+	
+	"""
+	inst = deepcopy(instance)
+	
+	original_times = inst.travel_times
+	
+	final_inst = prepare_ortools(inst)
+	
+	@info("Executing ORTools")
+
+	routes, o = py"main"(final_inst, convert(Int64, solver_params[1][2]))
+	
+	objective = get_objective(routes, original_times)
+	
+	return Solution(routes, [], [], objective, missing)
+end;
 
 # ╔═╡ f7c7f9c0-6632-11eb-27bb-e7a49dde68b8
 md"""
@@ -819,13 +899,6 @@ function callback_funct(model, X, source, sink, capacity, demand, late_times, ti
     end
 end;
 
-# ╔═╡ 6b72d8f2-72d5-11eb-2b47-f9b3330f0188
-md"""
-el if i <= length() es redundante porque igual late_times tiene customers + 2
-
-**Prueba solo con el callback de TW y con los dos!!**
-"""
-
 # ╔═╡ e0739df2-6f8e-11eb-0341-e5e67b838f21
 """
 
@@ -948,22 +1021,21 @@ function validate_solution(solution, data)
 		total_time, total_demand = 0, 0
 		
 		for c in 1:length(route) - 1
-
+				
 			total_time += times[route[c], route[c+1]]
 			
-			if route[c] <= length(data.service_times) # only customers
-				
-				@assert arrivals[route[c]] <= late[route[c]] # 1
-			
+			if route[c] <= length(data.service_times) && length(arrivals) > 0
+					@assert arrivals[route[c]] <= late[route[c]] # 1
 			end
 			
 		end
 		
-		total_demand = units[route[end-2]]
-		
 		@assert total_time <= max_time # 2
-
-		@assert total_demand <= max_capacity # 3
+		
+		if length(units) > 0
+			total_demand = units[route[end-2]]
+			@assert total_demand <= max_capacity # 3
+		end
 		
 		global_time += total_time
 		
@@ -976,23 +1048,13 @@ function validate_solution(solution, data)
 	@assert round(global_time) == round(objective) # 5
 
 	@assert unique(sort(all_nodes)) == collect(1:length(arrivals)) # 6
-	
 end;
+
+# ╔═╡ 3c273b04-718b-11eb-1263-2def968b9848
+# lm = lazy_model(deepcopy(data), engine, all_params[string(engine)]...)
 
 # ╔═╡ a0cd2ef2-71c6-11eb-1efa-15c088d4b8d0
 # validate_solution(lm, deepcopy(data))
-
-# ╔═╡ 39d05d1e-7234-11eb-0338-abc06b474347
-# @benchmark lazy_model(deepcopy(data), engine, all_params[string(engine)]...)
-
-# ╔═╡ 3c8221d6-718b-11eb-1465-171acd331599
-# mtzm = mtz_model(deepcopy(data), engine, all_params[string(engine)]...)
-
-# ╔═╡ d3ee2f86-71c9-11eb-33bf-9391c8ec534c
-# validate_solution(mtzm, deepcopy(data))
-
-# ╔═╡ 64376310-71ab-11eb-2719-eff1cb5b7c7f
-# @benchmark mtz_model(deepcopy(data), engine, all_params[string(engine)]...)
 
 # ╔═╡ cda9bb12-6671-11eb-0494-476f9966741d
 """
@@ -1088,19 +1150,19 @@ end;
 # ╔═╡ bbb41a3a-6f8e-11eb-02c9-fbd9f8088eca
 function optimal_routing(instance::Instance, solver::Module, solver_params::Pair...)
 	
-	callback_feature = ["Gurobi", "CPLEX", "GLPK"]
+	callback_feature = [] # "Gurobi", "CPLEX", "GLPK"]
 	
 	if string(solver) in callback_feature
 		
-		@warn("Using model with lazy constraints in " * string(solver))
+		@info("Using model with lazy constraints in " * string(solver))
 
-		lazy_model(instance, solver, solver_params...)
+		lazy_model(deepcopy(instance), solver, solver_params...)
 		
 	else
 		
-		@warn("Using model with normal constraints in " * string(solver))
+		@info("Using model with normal constraints in " * string(solver))
 		
-		mtz_model(instance, solver, solver_params...)
+		mtz_model(deepcopy(instance), solver, solver_params...)
 		
 	end	
 end;
@@ -1216,11 +1278,8 @@ Implementation cost
 
 # ╔═╡ 53bdc282-68d1-11eb-3188-5d845aba50fc
 function initialize_metrics()
-	return Dict("Gurobi" => Dict(), "Clp" => Dict(), "Cbc" => Dict(), "GLPK" => 				Dict(), "CPLEX" => Dict(), "Heuristic" => Dict(), "OR-Tools"=>Dict())
+	return Dict("Gurobi" => Dict(), "Clp" => Dict(), "Cbc" => Dict(), "GLPK" => 				Dict(), "CPLEX" => Dict(), "Heuristic" => Dict(), "ORTools"=>Dict())
 end;
-
-# ╔═╡ 353c2780-6733-11eb-3bd0-25bf2e882dd8
-engine_metrics = initialize_metrics();
 
 # ╔═╡ 48f995ce-6633-11eb-0556-bf3da4f6392b
 md"""
@@ -1251,36 +1310,13 @@ The experiments were executed locally in a MacBook Pro (16-inch, 2019).
 
 """
 
-# ╔═╡ c44cb24c-6726-11eb-30fe-bf4ab0bf02b4
-"""Given set of parameters, perform the benchmark for each solver"""
-function benchmark_engines(data::Instance, engines::Vector{Module}, all_params::Any)
-
-	suite, objective_values = BenchmarkGroup(["engines"]), Dict()
-	
-	for engine in engines
-		
-		engine_name = string(engine)
-		
-		e_params = all_params[engine_name]
-
-		objective_values[engine_name] = optimal_routing(deepcopy(data), engine, 														e_params...).objective
-
-		suite[engine_name] = @benchmark optimal_routing(deepcopy(data), engine, 																e_params...)
-
-	end
-
-	return suite, objective_values
-	
-end;
-
 # ╔═╡ 215eb286-67c5-11eb-1a2e-fba123258c06
 """
 Updates `engine_metrics` with the new information of the experiment.
 """
-function add_experiment!(engine_metrics::Dict{String,Dict{Any,Any}}, 										 experiment::BenchmarkGroup, engines::Vector{Module}, 								 objective_values::Dict{Any, Any})
+function add_experiment!(engine_metrics::Dict{String,Dict{Any,Any}}, 										 experiment::BenchmarkGroup, engines, objective_values)
 
 	for engine in string.(engines)
-		
 		allocs_estimated = experiment[engine].allocs
 		memory_estimated = experiment[engine].memory
 		objective_value = objective_values[engine]
@@ -1358,7 +1394,7 @@ For Solomon datasets, there are many `.xml` files at the `Input` folder.
 """
 
 # ╔═╡ b0fbb7f2-68d0-11eb-3d20-f5f015d3b4d1
-path_name = joinpath("Inputs", "solomon-1987", "C101_100.xml");
+path_name = joinpath("Inputs", "solomon-1987", "C109_100.xml");
 
 # ╔═╡ a85fed86-68bf-11eb-2bca-9985e71090cb
 md"""
@@ -1384,9 +1420,6 @@ begin
 	end
 	
 end;
-
-# ╔═╡ 23f824d6-7452-11eb-188a-49f801f9d60e
-data
 
 # ╔═╡ c8c0906a-68cb-11eb-0ed0-7341082f74a0
 md"""
@@ -1434,7 +1467,7 @@ Finally, choose the parameters configuration.
 
 # ╔═╡ 7287f2d6-6729-11eb-0871-33c510dafd9e
 begin
-	time_limit = 10.0 # seconds
+	time_limit = 1.0 # seconds
 	absolute_gap = .01
 	relative_gap = .01
 	stdout = false
@@ -1457,12 +1490,15 @@ begin
 	cplex_params = "CPX_PARAM_TILIM" => time_limit, 												   "CPX_PARAM_EPAGAP" => absolute_gap,
 				   "CPX_PARAM_EPGAP" => relative_gap,
 				   "CPX_PARAM_MIPDISPLAY" => log_level
+	
+	ortools_params = "time_limit" => time_limit
 
 	all_params = Dict("Gurobi" => gurobi_params,
 					  "Clp" => clp_params,
 					  "Cbc" => cbc_params,
 					  "GLPK" => glpk_params,
-					  "CPLEX" => cplex_params)
+					  "CPLEX" => cplex_params,
+					  "ORTools"=>ortools_params)
 end;
 
 # ╔═╡ 01680330-67c8-11eb-1a37-e34d1c3fb37c
@@ -1505,22 +1541,32 @@ Execute a single run: $(@bind run_single PlutoUI.CheckBox(false))
 """
 
 # ╔═╡ af883f14-6a77-11eb-0bac-0be99ccd9413
-engine = Gurobi;
+engine = Gurobi; # Gurobi, "ORTools"
 
-# ╔═╡ 3c273b04-718b-11eb-1263-2def968b9848
-lm = lazy_model(deepcopy(data), engine, all_params[string(engine)]...)
+# ╔═╡ 7f6898f6-753a-11eb-1469-71fea4ae79ac
+function run_single_opt(engine, data, all_params)
+	
+	if engine == "ORTools"
+
+		return solve_or_tools(data, all_params["ORTools"])
+
+	elseif engine isa Module
+
+		try
+			return optimal_routing(data, engine, all_params[string(engine)]...)
+
+		catch err
+			return Solution(Dict(missing=>missing), missing, err) 
+		end
+
+
+	end
+end;
 
 # ╔═╡ 753a39a6-6726-11eb-0444-afebdae52f2d
 begin
 	if run_single
-		try
-			solution = optimal_routing(deepcopy(data), engine, 																all_params[string(engine)]...)
-			# plot_vrp!()
-			
-		catch err
-			solution = Solution(Dict(missing=>missing), missing, err) 
-		end
-
+		run_single_opt(engine, deepcopy(data), all_params)
 	end
 end
 
@@ -1539,25 +1585,64 @@ Execute a sample: $(@bind run_single_sample PlutoUI.CheckBox(false))
 # ╔═╡ c556da4e-67c7-11eb-2205-9585ae72e01c
 begin
 	if run_single_sample
-
-		@benchmark optimal_routing(deepcopy(data), engine, 																		all_params[string(engine)]...)
+		if engine == "ORTools"
+			@benchmark solve_or_tools(data, all_params["ORTools"])
+			
+		elseif engine isa Module
+			@benchmark optimal_routing(data, engine, all_params[string(engine)]...)
+		end
 		
 	end
 end
+
+# ╔═╡ dcc9bed2-752e-11eb-1fba-d3ca00d3148c
+
 
 # ╔═╡ 7e30b296-6724-11eb-21a0-b9ab1a61e0e5
 md"""
 ### Run experiment $(@bind run_experiment PlutoUI.CheckBox(false))
 """
 
-# ╔═╡ cf83b88a-68aa-11eb-07e1-1ddc5da72910
-engines = [Gurobi]; # , CPLEX, Clp (just LP)
+# ╔═╡ 1b943516-7543-11eb-3a67-f5043347f27b
+md"""
+Note that before selecting a new scenario, you should **unclick this button**.
+"""
 
-# ╔═╡ b97ede18-6709-11eb-2133-8b91accb17cd
+# ╔═╡ 60c463ce-753c-11eb-04af-fb7a660b11fb
+engine_metrics = initialize_metrics();
+
+# ╔═╡ cf83b88a-68aa-11eb-07e1-1ddc5da72910
+engines = [Gurobi, "ORTools"]; # , CPLEX, Clp (just LP)
+
+# ╔═╡ f6d8f2c2-7540-11eb-14d3-691d9de2c808
 begin
 	if run_experiment
-		experiments, objective_values = benchmark_engines(deepcopy(data), engines, 																all_params)
-		add_experiment!(engine_metrics, experiments, engines, objective_values)
+		
+		suite = BenchmarkTools.BenchmarkGroup(["engines"])
+		objective_values = Dict()
+
+		for engine in engines
+
+			if engine == "ORTools"
+
+				suite[engine] = @benchmark solve_or_tools(data, all_params["ORTools"])
+
+				objective_values[engine] = solve_or_tools(data, all_params["ORTools"]).objective
+
+			elseif engine isa Module
+
+				engine_name = string(engine)
+
+				suite[engine_name] = @benchmark optimal_routing(data, engine, all_params[string(engine)]...)
+
+				objective_values[engine_name] = optimal_routing(data, engine, all_params[string(engine)]...).objective
+
+			end
+		end
+
+		@info("Adding new experiment with $suite")
+		add_experiment!(engine_metrics, suite, engines, objective_values)
+	
 	end
 end;
 
@@ -1587,7 +1672,7 @@ function business_metrics(engine, business_weights; people = 2)
 		impl_cost = 3 * people * 2500 # months * people * mean salary (USD)
 		return (impl_cost) * business_weights["Business"]
 		
-	elseif engine == "OR-Tools"
+	elseif engine == "ORTools"
 		impl_cost = 0 * people * 2500 # months * people * mean salary (USD)
 		return (impl_cost) * business_weights["Business"]
 
@@ -1696,7 +1781,7 @@ begin
 
 		if length(sorted_engines) > 0
 
-			boo_worth = first(sorted_engines)[1] == string(engine) ? true : false
+			# boo_worth = first(sorted_engines)[1] == string(engine) ? true : false
 
 			plots = plot_benchmark!(engine_metrics, sorted_engines, tech_weights, 										engines)
 
@@ -1712,7 +1797,7 @@ end;
 
 # ╔═╡ 835669a6-6633-11eb-3966-91411b7d6da1
 md"""
-# Takeaways
+# DL;DR
 """
 
 # ╔═╡ fc4e0572-67ca-11eb-1ac4-6dbdfd4a4b26
@@ -1721,35 +1806,75 @@ md"""
 """
 
 # ╔═╡ 465b58c8-67ca-11eb-3f0b-87ee6d3b1a12
-begin
-	n_experiments = missing
-	if run_experiment
-		if length(engine_metrics[string(engine)]) > 0
-			n_experiments = length(engine_metrics[string(engine)]["Allocs"]);
-		end
-		engine_metrics
-	end
-end
-
-# ╔═╡ fb82d2a4-67c9-11eb-3659-33c17b751fc3
-md"""
-Quantity of experiments: $(n_experiments)
-
-Ranking:
-"""
-
-# ╔═╡ 87e40234-68ad-11eb-30b8-df265cd112f7
-run_experiment == true ? sorted_engines : missing
+engine_metrics
 
 # ╔═╡ 3163ca86-6707-11eb-0669-315ac2a30ee6
 md"""
-**Decision**: $(engine) is a good idea - $(boo_worth)
-
 $(LocalResource("./Outputs/EnginesBenchmark.svg", :width=>1000))
 """
 
+# ╔═╡ 2d7b7966-7547-11eb-0075-9f5ce5710f31
+
+
+# ╔═╡ 01cf7c8c-7546-11eb-342c-67d4137f0965
+"""
+First against second analysis. 
+
+Return a % value of how much engine_1 is better than engine_2 (lower metrics)
+"""
+function compare_two(engine_1::String, engine_2::String, engine_metrics)
+	
+	time_mean_mean = 0
+	time_min_mean = 0
+	ov_mean = 0
+
+	for i in 1:length(engine_metrics[engine_1]["Allocs"]) # qty experiments
+		
+		time_mean_mean += (engine_metrics[engine_2]["Time-mean"][i]-engine_metrics[engine_1]["Time-mean"][i])/engine_metrics[engine_1]["Time-mean"][i]
+
+		time_min_mean += (engine_metrics[engine_2]["Time-minimum"][i]-engine_metrics[engine_1]["Time-minimum"][i])/engine_metrics[engine_1]["Time-minimum"][i]
+		
+		
+		ov_mean += (engine_metrics[engine_2]["OV"][i]-engine_metrics[engine_1]["OV"][i])/engine_metrics[engine_1]["OV"][i]
+		
+	end
+	
+	return time_mean_mean, time_min_mean, ov_mean
+	
+end;
+
+# ╔═╡ 43eada74-7548-11eb-38ed-2ba5f5bdaf94
+# compare_two("Gurobi","ORTools",engine_metrics)
+
+# ╔═╡ bc495240-7546-11eb-2c88-7d88843771b5
+# engine_metrics["Gurobi"]["Time-mean"]
+
+# ╔═╡ bd3d4ebc-7547-11eb-26dc-f708ca150866
+# first = 119.9 # gurobo
+
+# ╔═╡ c0412340-7547-11eb-2b1e-3dec19b17e76
+# second = 120
+
+# ╔═╡ c5065bac-7547-11eb-0577-2d5b178948ac
+(second-first)/first
+
+# ╔═╡ b4f96f2a-7546-11eb-1d73-638db29a3e66
+# mean_ortools = 
+
 # ╔═╡ f5e81bda-6993-11eb-11eb-5bf3ee416fc9
 md"""
+
+Calcular con engine_metrics
+- ortoolsob = validate_solution(pp, deepcopy(data))
+- mtzobj = validate_solution(mtzm, deepcopy(data))
+- (ortoolsob-mtzobj)/ortoolsob
+
+3. Callbacks
+
+
+
+
+
 
 ## Next steps
 
@@ -1805,6 +1930,63 @@ md"""
 
 - Check python implementations: [1](https://github.com/chkwon/vrpy), [2](https://github.com/chkwon/foodora-routing-problem).
 
+
+Formulating the problem will give us the flexibility to directly switch between different objectives depending on the state of the operations and will reduce times of filters such as prospect validations by adding model constraints
+
+
+
+
+
+
+
+"""
+
+# ╔═╡ f355984e-7545-11eb-2171-4b4804e7f7aa
+md"""
+**Ideas to improve the model**
+
+**Facts**
+
+- The linear relaxation of this three-index model provides very weak lower bounds.
+
+- To produce better lower bounds, reformulate as a set partitioning model: Elementary Shortest Path Problem with Resource Constraints (ESPPRC). 
+
+- The ESPPRC generates a set of all feasible routes for the VRPTW and decides if a route visits a certain customer considering two constraints: load $\leq$ capacity and arrival time $\in$ time window.
+
+- However, ESPPRC model contains a huge number of variables (one per feasible route).
+
+- To handle this huge number of variables, implement a column generation algorithm.
+
+
+- Furthermore, the two-index model contains an exponential number of time windows and subtour elimination constraints. Solution: apply dinamically.
+
+
+
+**Idea**
+
+Solve the CVRPTW with a Branch-and-Price algorithm [1, 2] in which:
+
+- The ESPPRC arises as the subproblem of finding feasible routes (columns) with negative reduced cost that are iteratively added to the restricted master problem.
+
+- Solve this ESPPRC with pulse and labeling algorithms [3] and the monodirectional dynamic programming method [4].
+
+- Linear relaxations of this are solved by column generation.
+
+**References**
+
+[1] Toth & Vigo Chapter 5: https://epubs.siam.org/doi/10.1137/1.9781611973594.ch5
+[2] https://doi.org/10.1287/trsc.2014.0582
+[3] https://onlinelibrary.wiley.com/doi/abs/10.1002/net.20033
+[4] Feillet, D., Dejax, P., Gendreau, M., Gueguen, C., 2004. An exact algorithm for the elementary shortest path problem with resource constraints: Application to some vehicle routing problems. 
+
+"""
+
+# ╔═╡ 327d44b2-7524-11eb-0362-4ddafb6cf159
+md"""
+- Gurobi es ... % mejor en promedio
+- Para que OR Tools iguale a Gurobi, necesita ... % mas de tiempo
+- ...
+
 """
 
 # ╔═╡ 3b9a473c-6707-11eb-32dc-fd046fb57eb4
@@ -1824,10 +2006,10 @@ More info at:
 # ╟─750b95a0-6407-11eb-15b5-8b4a9805b7e8
 # ╟─07b52084-6989-11eb-3019-5776e45a0a1b
 # ╟─8603086e-7129-11eb-1bf1-37093e6afb28
-# ╟─94bbeeae-6407-11eb-2bf5-a510e938453c
 # ╟─0657a1be-66ad-11eb-233d-15f3f93307e4
 # ╟─1a078ece-698a-11eb-0e77-edbb196ffcd6
 # ╟─1d364b76-698a-11eb-2133-0f8f2c2259aa
+# ╟─380ba706-7516-11eb-37cf-491a74848301
 # ╟─f0ce7818-6989-11eb-0aba-4165a1700a27
 # ╟─d4d31cba-66fa-11eb-2a5b-593e62edf09d
 # ╟─74925f1e-68c6-11eb-3169-cf8db4952332
@@ -1835,33 +2017,25 @@ More info at:
 # ╟─d537230c-68be-11eb-2bd8-b9c93c0278f5
 # ╟─b860657c-67d6-11eb-0240-6b84b814c3a9
 # ╟─33674ca8-67d5-11eb-1d83-89ed81652979
-# ╠═23f824d6-7452-11eb-188a-49f801f9d60e
-# ╠═1316a098-7455-11eb-357a-992ca346cf65
-# ╠═331f7c52-7455-11eb-168d-a3845d1a211f
-# ╠═72c68b7a-7455-11eb-1e52-d7752324d087
-# ╠═403d1c28-67d5-11eb-3a0f-e92303f07e3f
-# ╠═0eb32b2e-7456-11eb-2e9d-e195fe724784
+# ╟─403d1c28-67d5-11eb-3a0f-e92303f07e3f
+# ╟─f66434d6-74a1-11eb-2921-1fe79330cd48
+# ╟─9deb55ac-7521-11eb-1ec8-c9da0cc3bc13
 # ╟─f7c7f9c0-6632-11eb-27bb-e7a49dde68b8
 # ╟─2f455ffe-6634-11eb-36b5-d7d9c8e2decf
 # ╟─bbb41a3a-6f8e-11eb-02c9-fbd9f8088eca
-# ╠═b4647d92-72d6-11eb-1ff9-77c3db9ae6f2
-# ╠═1bc11276-72d6-11eb-16b6-2b2f66b3d3bd
-# ╠═30268d08-72e4-11eb-2998-e5998b88afab
-# ╠═b74c997a-72e4-11eb-3510-1583a16918ff
-# ╠═a4aa3352-72d0-11eb-38e6-ad004408b054
-# ╠═fc91fb98-72cd-11eb-1246-7b72dc2044cc
-# ╠═ac42497c-72d2-11eb-3e7b-794bd578e5ac
-# ╠═bcb00170-72ce-11eb-04eb-61c2f3a5d5a6
-# ╠═8b4bc38e-7196-11eb-315c-0922c360b5f6
-# ╠═6b72d8f2-72d5-11eb-2b47-f9b3330f0188
-# ╠═e0739df2-6f8e-11eb-0341-e5e67b838f21
+# ╟─b4647d92-72d6-11eb-1ff9-77c3db9ae6f2
+# ╟─1bc11276-72d6-11eb-16b6-2b2f66b3d3bd
+# ╟─30268d08-72e4-11eb-2998-e5998b88afab
+# ╟─b74c997a-72e4-11eb-3510-1583a16918ff
+# ╟─a4aa3352-72d0-11eb-38e6-ad004408b054
+# ╟─fc91fb98-72cd-11eb-1246-7b72dc2044cc
+# ╟─ac42497c-72d2-11eb-3e7b-794bd578e5ac
+# ╟─bcb00170-72ce-11eb-04eb-61c2f3a5d5a6
+# ╟─8b4bc38e-7196-11eb-315c-0922c360b5f6
+# ╟─e0739df2-6f8e-11eb-0341-e5e67b838f21
 # ╟─48c406c2-71c6-11eb-0d89-c90f3642a39d
 # ╠═3c273b04-718b-11eb-1263-2def968b9848
 # ╠═a0cd2ef2-71c6-11eb-1efa-15c088d4b8d0
-# ╠═39d05d1e-7234-11eb-0338-abc06b474347
-# ╠═3c8221d6-718b-11eb-1465-171acd331599
-# ╠═d3ee2f86-71c9-11eb-33bf-9391c8ec534c
-# ╠═64376310-71ab-11eb-2719-eff1cb5b7c7f
 # ╟─cda9bb12-6671-11eb-0494-476f9966741d
 # ╟─97222556-6366-11eb-03b2-e78c4247ccdf
 # ╟─971ff504-6633-11eb-06d4-09b91dac0ac6
@@ -1876,9 +2050,7 @@ More info at:
 # ╟─7f46fae2-6735-11eb-3042-4360a215e0b1
 # ╟─89b36da2-67d8-11eb-1bab-5f474524e5f5
 # ╟─53bdc282-68d1-11eb-3188-5d845aba50fc
-# ╠═353c2780-6733-11eb-3bd0-25bf2e882dd8
 # ╟─48f995ce-6633-11eb-0556-bf3da4f6392b
-# ╟─c44cb24c-6726-11eb-30fe-bf4ab0bf02b4
 # ╟─215eb286-67c5-11eb-1a2e-fba123258c06
 # ╟─498502dc-6726-11eb-23f5-4151f147db6f
 # ╟─1c8a6d54-6725-11eb-0025-85cacfc3b2ab
@@ -1895,13 +2067,17 @@ More info at:
 # ╟─01680330-67c8-11eb-1a37-e34d1c3fb37c
 # ╟─abac3bc8-67ea-11eb-044e-c1d760fceb77
 # ╠═af883f14-6a77-11eb-0bac-0be99ccd9413
+# ╟─7f6898f6-753a-11eb-1469-71fea4ae79ac
 # ╟─753a39a6-6726-11eb-0444-afebdae52f2d
 # ╟─eba9c380-67c7-11eb-03a8-0b1b0228308c
 # ╟─2aab45fe-6758-11eb-2687-ad29d7f3a7a2
 # ╟─c556da4e-67c7-11eb-2205-9585ae72e01c
+# ╟─dcc9bed2-752e-11eb-1fba-d3ca00d3148c
 # ╟─7e30b296-6724-11eb-21a0-b9ab1a61e0e5
+# ╟─1b943516-7543-11eb-3a67-f5043347f27b
+# ╠═60c463ce-753c-11eb-04af-fb7a660b11fb
 # ╠═cf83b88a-68aa-11eb-07e1-1ddc5da72910
-# ╟─b97ede18-6709-11eb-2133-8b91accb17cd
+# ╟─f6d8f2c2-7540-11eb-14d3-691d9de2c808
 # ╟─9fef3a2a-6735-11eb-3854-7d09363e5865
 # ╠═11ca652a-676d-11eb-1f19-a9360701370f
 # ╠═cb698a20-6771-11eb-2bbc-d5943bdb0319
@@ -1911,9 +2087,17 @@ More info at:
 # ╟─8ec22ec2-6778-11eb-1978-99a19f5156e8
 # ╟─835669a6-6633-11eb-3966-91411b7d6da1
 # ╟─fc4e0572-67ca-11eb-1ac4-6dbdfd4a4b26
-# ╟─465b58c8-67ca-11eb-3f0b-87ee6d3b1a12
-# ╟─fb82d2a4-67c9-11eb-3659-33c17b751fc3
-# ╟─87e40234-68ad-11eb-30b8-df265cd112f7
+# ╠═465b58c8-67ca-11eb-3f0b-87ee6d3b1a12
 # ╟─3163ca86-6707-11eb-0669-315ac2a30ee6
+# ╠═2d7b7966-7547-11eb-0075-9f5ce5710f31
+# ╠═01cf7c8c-7546-11eb-342c-67d4137f0965
+# ╠═43eada74-7548-11eb-38ed-2ba5f5bdaf94
+# ╠═bc495240-7546-11eb-2c88-7d88843771b5
+# ╠═bd3d4ebc-7547-11eb-26dc-f708ca150866
+# ╠═c0412340-7547-11eb-2b1e-3dec19b17e76
+# ╠═c5065bac-7547-11eb-0577-2d5b178948ac
+# ╠═b4f96f2a-7546-11eb-1d73-638db29a3e66
 # ╟─f5e81bda-6993-11eb-11eb-5bf3ee416fc9
+# ╟─f355984e-7545-11eb-2171-4b4804e7f7aa
+# ╠═327d44b2-7524-11eb-0362-4ddafb6cf159
 # ╟─3b9a473c-6707-11eb-32dc-fd046fb57eb4
